@@ -1,3 +1,6 @@
+//! 中文：扫描引擎模块，负责并行读取 records、执行 exact motif 匹配，并汇总输出结果。
+//! English: Scan-engine module responsible for parallel record processing, exact motif matching, and result aggregation.
+
 use std::time::Duration;
 
 use anyhow::Result;
@@ -12,10 +15,7 @@ use std::arch::x86_64::*;
 
 use crate::cli::CountArgs;
 use crate::io::{open_record_reader, ProgressSnapshot, Record, RecordReader};
-use crate::motif::{
-    canonical_base_mask, compile_motifs, load_motif_file, load_single_motif, CompiledMotif,
-    Strand,
-};
+use crate::motif::{compile_motifs, load_motif_file, load_single_motif, CompiledMotif, Strand};
 use crate::output::{
     create_writer, write_count_summary, write_read_hit_headers, write_read_hit_rows, CountRow,
     ReadHitRow, TableWriter,
@@ -23,17 +23,16 @@ use crate::output::{
 
 const DEFAULT_CHUNK_SIZE: usize = 512;
 
-#[derive(Debug, Clone, Copy)]
-struct ScanOptions {
-    use_iupac: bool,
-}
-
+/// 中文：单条 record 扫描后的局部结果，稍后会被合并进全局计数。
+/// English: Per-record scan result that is merged later into the global counters.
 #[derive(Debug, Clone)]
 struct RecordResult {
     motif_hits: Vec<MotifHitSummary>,
     read_hits: Vec<ReadHitRow>,
 }
 
+/// 中文：单个 motif 在单条 record 上的统计摘要。
+/// English: Summary of how one motif behaved on one record.
 #[derive(Debug, Clone)]
 struct MotifHitSummary {
     motif_index: usize,
@@ -43,12 +42,19 @@ struct MotifHitSummary {
     read_has_hit: bool,
 }
 
+/// 中文：某条模式扫描的原始结果，包括命中次数以及可选的位置列表。
+/// English: Raw result for scanning one pattern, including hit count and an optional list of positions.
 #[derive(Debug, Clone, Default)]
 struct PatternScanResult {
     hit_count: u64,
     positions: Vec<usize>,
 }
 
+/// 中文：`count` 子命令的主执行入口。
+/// English: Main execution entry for the `count` subcommand.
+///
+/// 中文：这个函数负责验证参数、加载 motif、打开输入流、驱动扫描循环，并把最终汇总结果写成 CSV。
+/// English: This function validates arguments, loads motifs, opens the input stream, drives the scan loop, and writes the final aggregated CSV output.
 pub fn run_count(args: &CountArgs) -> Result<()> {
     args.validate()?;
     let raw_motifs = if let Some(sequence) = &args.motif {
@@ -56,10 +62,7 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
     } else {
         load_motif_file(args.motifs.as_ref().unwrap())?
     };
-    let motifs = compile_motifs(&raw_motifs, args.revcomp, args.iupac)?;
-    let scan_options = ScanOptions {
-        use_iupac: args.iupac,
-    };
+    let motifs = compile_motifs(&raw_motifs, args.revcomp)?;
 
     let mut reader = open_record_reader(&args.input)?;
     let mut rows = initialize_rows(&motifs);
@@ -71,7 +74,6 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
         &mut reader,
         &motifs,
         &mut progress,
-        scan_options,
         hit_writer.as_mut(),
         &mut rows,
     )?;
@@ -83,6 +85,8 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
     write_count_summary(&args.output, &rows)
 }
 
+// 中文：按需创建 read-hit 明细输出器；如果用户没请求，就返回 `None`。
+// English: Creates the optional read-hit writer when requested; otherwise returns `None`.
 fn maybe_open_hit_writer(path: Option<&std::path::Path>) -> Result<Option<TableWriter>> {
     match path {
         Some(path) => {
@@ -94,6 +98,8 @@ fn maybe_open_hit_writer(path: Option<&std::path::Path>) -> Result<Option<TableW
     }
 }
 
+// 中文：根据 motif 列表预先创建汇总行，后续扫描时只需原地累加。
+// English: Pre-allocates summary rows from the motif list so later scan passes can update them in place.
 fn initialize_rows(motifs: &[CompiledMotif]) -> Vec<CountRow> {
     motifs
         .iter()
@@ -109,11 +115,12 @@ fn initialize_rows(motifs: &[CompiledMotif]) -> Vec<CountRow> {
         .collect()
 }
 
+    // 中文：以 chunk 为单位推进整个扫描过程；每个 chunk 内部并行处理，每个 chunk 结束后统一归并结果。
+    // English: Advances the full scan in chunk units; each chunk is processed in parallel and merged only after the chunk finishes.
 fn scan_records(
     reader: &mut RecordReader,
     motifs: &[CompiledMotif],
     progress: &mut ScanProgress,
-    options: ScanOptions,
     mut hit_writer: Option<&mut TableWriter>,
     rows: &mut [CountRow],
 ) -> Result<()> {
@@ -128,7 +135,7 @@ fn scan_records(
         let emit_read_hits = hit_writer.is_some();
         let record_results: Vec<RecordResult> = chunk
             .into_par_iter()
-            .map(|record| scan_record(&record, motifs, options, emit_read_hits))
+            .map(|record| scan_record(&record, motifs, emit_read_hits))
             .collect();
 
         let mut chunk_read_hits = Vec::new();
@@ -149,11 +156,15 @@ fn scan_records(
     Ok(())
 }
 
+/// 中文：进度展示状态；关闭时用 `Disabled` 避免热路径里到处判断具体组件。
+/// English: Progress-report state; the `Disabled` variant keeps the hot path free from UI-specific branching details.
 enum ScanProgress {
     Enabled(ProgressState),
     Disabled,
 }
 
+/// 中文：进度条运行时状态，保存累计 reads、碱基数和界面展示对象。
+/// English: Runtime progress-bar state storing cumulative reads, bases, and the UI handle itself.
 struct ProgressState {
     bar: ProgressBar,
     reads_processed: u64,
@@ -164,6 +175,8 @@ struct ProgressState {
 }
 
 impl ScanProgress {
+    /// 中文：根据用户是否开启 `--progress` 来创建真实进度条或空实现。
+    /// English: Creates either a real progress bar or a disabled no-op state depending on `--progress`.
     fn new(
         reader: &RecordReader,
         enabled: bool,
@@ -200,6 +213,8 @@ impl ScanProgress {
         Ok(Self::Enabled(state))
     }
 
+    /// 中文：在处理完一个 chunk 后刷新累计进度和界面文本。
+    /// English: Updates cumulative progress and refreshes the progress-bar message after one chunk completes.
     fn update(&mut self, chunk_reads: u64, chunk_bases: u64, snapshot: ProgressSnapshot) {
         if let Self::Enabled(state) = self {
             state.reads_processed += chunk_reads;
@@ -211,6 +226,8 @@ impl ScanProgress {
         }
     }
 
+    /// 中文：扫描结束时收尾进度条显示。
+    /// English: Finalizes the progress display when scanning is complete.
     fn finish(&self) {
         if let Self::Enabled(state) = self {
             state.bar.finish_and_clear();
@@ -219,6 +236,8 @@ impl ScanProgress {
 }
 
 impl ProgressState {
+    /// 中文：重新计算并更新进度条消息文本，例如 reads/s 和平均 read 长度。
+    /// English: Recomputes and updates the progress-bar message, such as reads per second and average read length.
     fn refresh_message(&mut self) {
         let elapsed = self.bar.elapsed().as_secs_f64();
         let reads_per_sec = if elapsed > 0.0 {
@@ -243,6 +262,8 @@ impl ProgressState {
     }
 }
 
+// 中文：把单条 record 的局部统计加到全局汇总表里。
+// English: Merges one record's local statistics into the global summary table.
 fn merge_record_result(record_result: &RecordResult, rows: &mut [CountRow]) {
     for motif_hit in &record_result.motif_hits {
         let row = &mut rows[motif_hit.motif_index];
@@ -255,31 +276,18 @@ fn merge_record_result(record_result: &RecordResult, rows: &mut [CountRow]) {
     }
 }
 
+// 中文：扫描单条 record 上的所有 motif，并按需要收集 read-level hit 明细。
+// English: Scans all motifs on one record and optionally collects read-level hit details.
 fn scan_record(
     record: &Record,
     motifs: &[CompiledMotif],
-    options: ScanOptions,
     emit_read_hits: bool,
 ) -> RecordResult {
-    let read_masks = options.use_iupac.then(|| {
-        record
-            .seq
-            .iter()
-            .copied()
-            .map(canonical_base_mask)
-            .collect::<Vec<_>>()
-    });
     let mut motif_hits = Vec::with_capacity(motifs.len());
     let mut read_hits = Vec::new();
 
     for (motif_index, motif) in motifs.iter().enumerate() {
-        let forward_scan = scan_pattern(
-            record,
-            read_masks.as_deref(),
-            &motif.forward,
-            options,
-            emit_read_hits,
-        );
+        let forward_scan = scan_pattern(record, &motif.forward, emit_read_hits);
         if forward_scan.hit_count > 0 {
             if emit_read_hits {
                 append_read_hits(
@@ -296,15 +304,7 @@ fn scan_record(
         let reverse_scan = motif
             .reverse
             .as_ref()
-            .map(|pattern| {
-                scan_pattern(
-                    record,
-                    read_masks.as_deref(),
-                    pattern,
-                    options,
-                    emit_read_hits,
-                )
-            })
+            .map(|pattern| scan_pattern(record, pattern, emit_read_hits))
             .unwrap_or_default();
         if reverse_scan.hit_count > 0 {
             if emit_read_hits {
@@ -339,6 +339,8 @@ fn scan_record(
     }
 }
 
+// 中文：把模式命中的位置列表展开成真正的 read-hit 输出行。
+// English: Expands a list of hit positions into concrete read-hit output rows.
 fn append_read_hits(
     sink: &mut Vec<ReadHitRow>,
     record: &Record,
@@ -359,11 +361,11 @@ fn append_read_hits(
     }
 }
 
+// 中文：扫描一条具体 pattern，在 exact 模式下统计命中次数，并在需要时记录所有位置。
+// English: Scans one concrete pattern in exact mode, counting hits and recording positions when requested.
 fn scan_pattern(
     record: &Record,
-    read_masks: Option<&[u8]>,
     pattern: &crate::motif::Pattern,
-    options: ScanOptions,
     collect_positions: bool,
 ) -> PatternScanResult {
     if pattern.sequence.len() > record.seq.len() {
@@ -379,27 +381,10 @@ fn scan_pattern(
         },
     };
 
-    if options.use_iupac {
-        if let Some(masks) = read_masks {
-            let last_start = masks.len() - pattern.masks.len();
-            'outer: for start in 0..=last_start {
-                for (offset, motif_mask) in pattern.masks.iter().enumerate() {
-                    if motif_mask & masks[start + offset] == 0 {
-                        continue 'outer;
-                    }
-                }
-                result.hit_count += 1;
-                if collect_positions {
-                    result.positions.push(start);
-                }
-            }
-        }
-    } else {
-        for position in exact_positions_iter(&record.seq, &pattern.sequence) {
-            result.hit_count += 1;
-            if collect_positions {
-                result.positions.push(position);
-            }
+    for position in exact_positions_iter(&record.seq, &pattern.sequence) {
+        result.hit_count += 1;
+        if collect_positions {
+            result.positions.push(position);
         }
     }
 
@@ -407,10 +392,14 @@ fn scan_pattern(
 }
 
 #[cfg(test)]
+// 中文：测试辅助函数，直接返回所有 exact 命中位置，方便断言。
+// English: Test helper that materializes all exact-match positions for straightforward assertions.
 fn exact_positions(sequence: &[u8], pattern: &[u8]) -> Vec<usize> {
     exact_positions_iter(sequence, pattern).collect()
 }
 
+// 中文：exact matching 的核心候选迭代器：先用 `memchr` 找首字节，再用次字节、末字节和整窗比较做快速剪枝。
+// English: Core exact-match iterator: it uses `memchr` for the first byte, then prunes with second-byte, last-byte, and full-window checks.
 fn exact_positions_iter<'a>(
     sequence: &'a [u8],
     pattern: &'a [u8],
@@ -435,26 +424,9 @@ fn exact_positions_iter<'a>(
     })
 }
 
-#[cfg(test)]
-fn iupac_positions(read_masks: &[u8], motif_masks: &[u8]) -> Vec<usize> {
-    if motif_masks.len() > read_masks.len() {
-        return Vec::new();
-    }
-
-    let last_start = read_masks.len() - motif_masks.len();
-    let mut hits = Vec::new();
-    'outer: for start in 0..=last_start {
-        for (offset, motif_mask) in motif_masks.iter().enumerate() {
-            if motif_mask & read_masks[start + offset] == 0 {
-                continue 'outer;
-            }
-        }
-        hits.push(start);
-    }
-    hits
-}
-
 #[inline]
+// 中文：比较一个窗口和 motif 是否完全相等；在 x86/x86_64 上会优先使用 SIMD 快路径。
+// English: Compares one candidate window with the motif for exact equality, preferring SIMD fast paths on x86/x86_64.
 fn exact_match_window(window: &[u8], pattern: &[u8]) -> bool {
     if window.len() != pattern.len() {
         return false;
@@ -479,6 +451,8 @@ fn exact_match_window(window: &[u8], pattern: &[u8]) -> bool {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
+// 中文：使用 AVX2 按 32 字节块比较两个切片；只在 CPU 支持且窗口足够长时调用。
+// English: Uses AVX2 to compare two slices in 32-byte chunks; called only when the CPU supports it and the window is long enough.
 unsafe fn avx2_equal(window: &[u8], pattern: &[u8]) -> bool {
     let mut offset = 0;
     while offset + 32 <= window.len() {
@@ -495,6 +469,8 @@ unsafe fn avx2_equal(window: &[u8], pattern: &[u8]) -> bool {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "sse2")]
+// 中文：使用 SSE2 按 16 字节块比较两个切片；作为 AVX2 不可用时的次优 SIMD 路径。
+// English: Uses SSE2 to compare two slices in 16-byte chunks as the fallback SIMD path when AVX2 is unavailable.
 unsafe fn sse2_equal(window: &[u8], pattern: &[u8]) -> bool {
     let mut offset = 0;
     while offset + 16 <= window.len() {
@@ -514,8 +490,10 @@ mod tests {
     use crate::io::{Record, SourceFormat};
     use crate::motif::{compile_motifs, RawMotif};
 
-    use super::{exact_match_window, exact_positions, iupac_positions, scan_record, ScanOptions};
+    use super::{exact_match_window, exact_positions, scan_record};
 
+    // 中文：构造一个最小 record，方便在单元测试里直接驱动扫描逻辑。
+    // English: Builds a minimal record object so unit tests can drive the scan logic directly.
     fn demo_record(id: &str, seq: &str, qual: Option<Vec<u8>>) -> Record {
         Record {
             id: id.to_string(),
@@ -526,26 +504,16 @@ mod tests {
     }
 
     #[test]
+    // 中文：验证 exact 匹配会保留重叠命中，而不是只返回不重叠窗口。
+    // English: Verifies that exact matching keeps overlapping hits instead of only returning disjoint windows.
     fn exact_matching_finds_overlapping_hits() {
         let hits = exact_positions(b"AAAAA", b"AAA");
         assert_eq!(hits, vec![0, 1, 2]);
     }
 
     #[test]
-    fn iupac_matching_accepts_compatible_bases() {
-        let read_masks = b"ATGAA"
-            .iter()
-            .map(|base| crate::motif::iupac_mask(*base))
-            .collect::<Vec<_>>();
-        let motif_masks = b"ATGRN"
-            .iter()
-            .map(|base| crate::motif::iupac_mask(*base))
-            .collect::<Vec<_>>();
-        let hits = iupac_positions(&read_masks, &motif_masks);
-        assert_eq!(hits, vec![0]);
-    }
-
-    #[test]
+    // 中文：验证 `reads_with_hit` 和 `total_hits` 的统计语义不同：一条 read 多次命中时只算一次 read，但会累计多个 hit。
+    // English: Verifies that `reads_with_hit` and `total_hits` have different semantics: one read can contribute once to the former and multiple times to the latter.
     fn reads_with_hit_and_total_hits_are_distinct() {
         let motifs = compile_motifs(
             &[RawMotif {
@@ -553,22 +521,16 @@ mod tests {
                 sequence: "AAA".to_string(),
             }],
             false,
-            false,
         )
         .unwrap();
-        let result = scan_record(
-            &demo_record("r1", "AAAAA", Some(vec![40; 5])),
-            &motifs,
-            ScanOptions {
-                use_iupac: false,
-            },
-            false,
-        );
+        let result = scan_record(&demo_record("r1", "AAAAA", Some(vec![40; 5])), &motifs, false);
         assert_eq!(result.motif_hits[0].total_hits, 3);
         assert!(result.motif_hits[0].read_has_hit);
     }
 
     #[test]
+    // 中文：验证开启反向互补后，scanner 能识别来自 reverse-complement 链的命中。
+    // English: Verifies that reverse-complement hits are detected correctly when revcomp scanning is enabled.
     fn reverse_complement_hits_are_detected() {
         let motifs = compile_motifs(
             &[RawMotif {
@@ -576,44 +538,32 @@ mod tests {
                 sequence: "ATTATGAGAATAGTGTG".to_string(),
             }],
             true,
-            false,
         )
         .unwrap();
         let reverse = "CACACTATTCTCATAAT";
-        let result = scan_record(
-            &demo_record("r1", reverse, Some(vec![40; reverse.len()])),
-            &motifs,
-            ScanOptions {
-                use_iupac: false,
-            },
-            true,
-        );
+        let result = scan_record(&demo_record("r1", reverse, Some(vec![40; reverse.len()])), &motifs, true);
         assert_eq!(result.motif_hits[0].revcomp_hits, 1);
     }
 
     #[test]
-    fn iupac_mode_does_not_treat_ambiguous_read_bases_as_matches() {
+    // 中文：验证 exact 模式不会把包含 `N` 的 read 片段误当成普通精确匹配。
+    // English: Verifies that exact mode does not mistakenly treat read windows containing `N` as exact matches.
+    fn exact_mode_does_not_match_ambiguous_motif_literals() {
         let motifs = compile_motifs(
             &[RawMotif {
-                name: "iupac".to_string(),
-                sequence: "ATGRN".to_string(),
+                name: "m1".to_string(),
+                sequence: "ATGAA".to_string(),
             }],
             false,
-            true,
         )
         .unwrap();
-        let result = scan_record(
-            &demo_record("r1", "ATGNN", Some(vec![40; 5])),
-            &motifs,
-            ScanOptions {
-                use_iupac: true,
-            },
-            false,
-        );
+        let result = scan_record(&demo_record("r1", "ATGNN", Some(vec![40; 5])), &motifs, false);
         assert_eq!(result.motif_hits[0].total_hits, 0);
     }
 
     #[test]
+    // 中文：验证 SIMD 快路径和标量回退路径在窗口比较上的结果一致。
+    // English: Verifies that the SIMD fast path and the scalar fallback agree on window-comparison results.
     fn simd_window_match_falls_back_correctly() {
         let pattern = b"ATTATGAGAATAGTGTGATTATGAGAATAGTGTG";
         assert!(exact_match_window(pattern, pattern));

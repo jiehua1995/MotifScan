@@ -7,7 +7,7 @@ MotifScan is designed as a streaming, low-memory, multi-threaded Rust CLI for mo
 1. Correct exact and reverse-complement motif detection.
 2. Support for FASTA, FASTQ, and gzip-compressed input without whole-file loading.
 3. Scalable processing for short and long reads.
-4. Stable tabular outputs for downstream analysis.
+4. Stable comma-separated tabular outputs for downstream analysis.
 5. Clear code structure so developers can extend matching, I/O, and reporting paths safely.
 
 ## High-Level Architecture
@@ -45,12 +45,11 @@ Owns motif parsing and compilation.
 
 Responsibilities:
 
-- Parse motif tables from TSV, CSV, or whitespace-delimited text.
+- Parse motif tables from two-column CSV input.
 - Validate single-motif and motif-table inputs.
 - Normalize motif sequence case.
 - Precompute forward motif representation.
 - Precompute reverse-complement motif representation when requested.
-- Build IUPAC masks for ambiguous matching.
 - Detect palindromic motifs to avoid double counting.
 
 ### `src/scanner.rs`
@@ -61,7 +60,7 @@ Responsibilities:
 
 - Coordinate count flows.
 - Read input in chunks and process records in parallel using Rayon.
-- Choose exact vs IUPAC matching paths.
+- Run the exact-matching scan path.
 - Aggregate motif hit counts.
 - Emit optional progress information.
 
@@ -102,16 +101,6 @@ Algorithm:
 4. Fall back to scalar slice comparison when SIMD is unavailable or the window is short.
 
 This path keeps branching low and avoids full-window comparison for most non-matching candidates.
-
-### IUPAC Matching Path
-
-When `--iupac` is enabled:
-
-1. The motif is precompiled into bitmasks.
-2. Each read is converted once into per-base masks.
-3. A motif window matches only if every position satisfies `motif_mask & read_mask != 0`.
-
-This path is more general but slower than exact matching, so it is only used when explicitly requested.
 
 ### Reverse Complement Strategy
 
@@ -238,16 +227,14 @@ Represents one precompiled motif.
 Fields include:
 
 - motif name
-- optional group
 - uppercase forward sequence
-- precomputed masks
 - optional reverse-complement pattern
 - palindrome flag
 
 ## Known Constraints
 
 - FASTQ support is currently limited to standard 4-line layout.
-- IUPAC matching is scalar rather than SIMD-accelerated.
+- Only exact motif matching is supported.
 - There is no Aho-Corasick multi-motif exact fast path yet.
 - Approximate matching and mismatch-tolerant matching are not implemented.
 - ETA for gzip input is approximate because compressed bytes do not scale linearly with logical records.
@@ -258,10 +245,9 @@ Good next development targets:
 
 1. Add `--no-progress` or richer progress sinks for batch environments.
 2. Add Aho-Corasick for many exact motifs.
-3. Add SIMD or bit-parallel acceleration for the IUPAC path.
-4. Add more formal benchmark harnesses.
-5. Add approximate matching with bounded mismatches.
-6. Add richer machine-readable run metadata.
+3. Add more formal benchmark harnesses.
+4. Add approximate matching with bounded mismatches.
+5. Add richer machine-readable run metadata.
 
 ## Developer Notes
 
@@ -271,4 +257,4 @@ When extending the codebase:
 - Prefer precomputation in `motif.rs` over repeated work in the hot scan loop.
 - Keep output schemas stable.
 - Validate changes with both unit tests and large CLI integration tests.
-- Benchmark exact-path changes separately from IUPAC-path changes so regressions are attributable.
+- Benchmark exact-path changes separately so regressions are attributable.
