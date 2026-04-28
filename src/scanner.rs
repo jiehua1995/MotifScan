@@ -191,9 +191,9 @@ impl ScanProgress {
         let snapshot = reader.progress_snapshot();
         let bar = ProgressBar::new(snapshot.total_bytes);
         let style = ProgressStyle::with_template(
-            "{spinner:.green} {msg} [{bar:36.cyan/blue}] {percent:>3}% | {bytes}/{total_bytes} | elapsed {elapsed_precise} | eta {eta_precise}",
+            "{spinner:.green} {msg}\n[{bar:40.cyan/blue}] {percent:>3}% | {bytes}/{total_bytes} | eta {eta_precise}",
         )?;
-        bar.set_style(style.progress_chars("##-"));
+        bar.set_style(style.progress_chars("=>-"));
         bar.enable_steady_tick(Duration::from_millis(120));
         bar.set_position(snapshot.bytes_read);
         let input_name = input_path
@@ -250,15 +250,32 @@ impl ProgressState {
         } else {
             0.0
         };
+        let elapsed_label = format_duration(self.bar.elapsed());
         self.bar.set_message(format!(
-            "{} {} | motifs {} | reads {} | avg_len {:.1} bp | {:.1} reads/s",
+            "{} {} | motifs {} | reads {} | avg_len {:.1} bp | {:.1} reads/s | elapsed {}",
             self.mode,
             self.input_name,
             self.motif_count,
             self.reads_processed,
             avg_read_len,
-            reads_per_sec
+            reads_per_sec,
+            elapsed_label,
         ));
+    }
+}
+
+// 中文：把持续时间格式化成紧凑的 `HH:MM:SS` 或 `MM:SS`，用于进度消息展示。
+// English: Formats a duration into compact `HH:MM:SS` or `MM:SS` text for the progress message.
+fn format_duration(duration: Duration) -> String {
+    let total_seconds = duration.as_secs();
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let seconds = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    } else {
+        format!("{minutes:02}:{seconds:02}")
     }
 }
 

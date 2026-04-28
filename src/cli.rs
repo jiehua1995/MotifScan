@@ -51,30 +51,32 @@ pub fn version_banner() -> String {
 /// English: Set of supported subcommands; currently only `count` is implemented.
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
+    #[command(about = "Count exact motif hits in reads", long_about = None)]
     Count(CountArgs),
 }
 
 /// 中文：`count` 子命令的全部参数，描述输入、motif、线程与输出目标。
 /// English: Full argument set for the `count` subcommand, including input, motif, threading, and output targets.
 #[derive(Debug, Clone, Args)]
+#[command(about = "Count exact motif hits in reads", long_about = None)]
 pub struct CountArgs {
-    #[arg(short = 'i', long)]
+    #[arg(short = 'i', long, help = "Input read file in FASTA, FASTQ, FASTA.GZ, or FASTQ.GZ format")]
     pub input: std::path::PathBuf,
-    #[arg(long, conflicts_with = "motifs")]
+    #[arg(long, conflicts_with = "motifs", help = "Single motif sequence provided on the command line")]
     pub motif: Option<String>,
-    #[arg(long, default_value = "motif")]
+    #[arg(long, default_value = "motif", help = "Output name used with --motif")]
     pub motif_name: String,
-    #[arg(long, conflicts_with = "motif")]
+    #[arg(long, conflicts_with = "motif", help = "Two-column CSV file containing motif name and sequence")]
     pub motifs: Option<std::path::PathBuf>,
-    #[arg(long)]
+    #[arg(long, help = "Also scan the reverse complement of each motif")]
     pub revcomp: bool,
-    #[arg(short = 't', long, default_value_t = num_cpus::get())]
+    #[arg(short = 't', long, default_value_t = num_cpus::get(), help = "Number of worker threads to use")]
     pub threads: usize,
-    #[arg(long)]
+    #[arg(long, help = "Show a live progress display on stderr")]
     pub progress: bool,
-    #[arg(short = 'o', long)]
+    #[arg(short = 'o', long, help = "Output CSV file for motif summary counts")]
     pub output: std::path::PathBuf,
-    #[arg(long)]
+    #[arg(long, help = "Optional CSV file for read-level hit details")]
     pub report_read_hits: Option<std::path::PathBuf>,
 }
 
