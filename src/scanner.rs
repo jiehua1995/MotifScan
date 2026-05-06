@@ -27,7 +27,10 @@ use crate::output::{
 
 const DEFAULT_CHUNK_SIZE: usize = 512;
 
-type HitWriterResult = (Option<Sender<Vec<ReadHitRow>>>, Option<thread::JoinHandle<()>>);
+type HitWriterResult = (
+    Option<Sender<Vec<ReadHitRow>>>,
+    Option<thread::JoinHandle<()>>,
+);
 
 /// 简单封装，保存 Aho-Corasick 自动机与 pattern id -> (motif_index, strand, length) 映射
 struct AhoIndex {
