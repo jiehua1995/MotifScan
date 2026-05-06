@@ -1,5 +1,12 @@
 # MotifScan
 
+<div align="center">
+  <a href="https://github.com/jiehua1995/MotifScan">
+    <img src="doc/logo.png" alt="MotifScan logo" width="420" style="border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.14);">
+  </a>
+  <p style="margin:8px 0 0 0; font-size:16px; color:#444;">Streaming, low-memory motif scanning CLI in Rust — FASTA/FASTQ, CSV motifs, Aho–Corasick acceleration</p>
+</div>
+
 MotifScan is a streaming, low-memory, multi-threaded Rust CLI for motif scanning in FASTA and FASTQ reads.
 
 - Exact matching only

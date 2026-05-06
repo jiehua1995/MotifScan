@@ -1,5 +1,12 @@
 # MotifScan 中文说明
 
+<div align="center">
+  <a href="https://github.com/jiehua1995/MotifScan">
+    <img src="doc/logo.png" alt="MotifScan 标志" width="420" style="border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,0.14);">
+  </a>
+  <p style="margin:8px 0 0 0; font-size:16px; color:#444;">流式、低内存的 motif 扫描 CLI（Rust）— 支持 FASTA/FASTQ、CSV motif、Aho–Corasick 加速</p>
+</div>
+
 MotifScan 是一个用 Rust 编写的流式、低内存、多线程 motif 扫描命令行工具，适用于 FASTA 和 FASTQ reads。
 
 - 只支持 exact matching
