@@ -66,6 +66,7 @@ jobs:
           fi
       - name: Determine version
         id: get_version
+        shell: bash
         run: |
           VERSION=$(awk -F\" '/^version =/ {print $2; exit}' Cargo.toml)
           echo "VERSION=$VERSION" >> $GITHUB_ENV
