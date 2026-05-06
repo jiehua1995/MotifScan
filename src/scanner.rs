@@ -1,11 +1,11 @@
 //! 中文：扫描引擎模块，负责并行读取 records、执行 exact motif 匹配，并汇总输出结果。
 //! English: Scan-engine module responsible for parallel record processing, exact motif matching, and result aggregation.
 
-use std::time::Duration;
+use aho_corasick::AhoCorasick;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::thread;
-use aho_corasick::AhoCorasick;
+use std::time::Duration;
 
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -20,7 +20,10 @@ use std::arch::x86_64::*;
 use crate::cli::CountArgs;
 use crate::io::{open_record_reader, ProgressSnapshot, Record, RecordReader};
 use crate::motif::{compile_motifs, load_motif_file, load_single_motif, CompiledMotif, Strand};
-use crate::output::{create_writer, write_count_summary, write_read_hit_headers, write_read_hit_rows, CountRow, ReadHitRow};
+use crate::output::{
+    create_writer, write_count_summary, write_read_hit_headers, write_read_hit_rows, CountRow,
+    ReadHitRow,
+};
 
 const DEFAULT_CHUNK_SIZE: usize = 512;
 
@@ -125,7 +128,10 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
 // English: Creates the optional read-hit writer when requested; otherwise returns `None`.
 fn maybe_spawn_hit_writer(
     path: Option<&std::path::Path>,
-) -> Result<(Option<Sender<Vec<ReadHitRow>>>, Option<thread::JoinHandle<()>>)> {
+) -> Result<(
+    Option<Sender<Vec<ReadHitRow>>>,
+    Option<thread::JoinHandle<()>>,
+)> {
     match path {
         Some(path) => {
             let path = path.to_path_buf();
@@ -200,9 +206,9 @@ fn scan_records(
 
         let emit_read_hits = hit_sender.is_some();
         let record_results: Vec<RecordResult> = if let Some(aho) = aho_index {
-                chunk
-                    .into_par_iter()
-                    .map(|record| scan_record_aho(&record, motifs, emit_read_hits, aho))
+            chunk
+                .into_par_iter()
+                .map(|record| scan_record_aho(&record, motifs, emit_read_hits, aho))
                 .collect()
         } else {
             chunk
@@ -448,7 +454,12 @@ fn append_read_hits(
 }
 
 // 使用 Aho-Corasick 自动机扫描单条 record（多 pattern 路径）
-fn scan_record_aho(record: &Record, motifs: &[CompiledMotif], collect_positions: bool, aho: &AhoIndex) -> RecordResult {
+fn scan_record_aho(
+    record: &Record,
+    motifs: &[CompiledMotif],
+    collect_positions: bool,
+    aho: &AhoIndex,
+) -> RecordResult {
     // prepare per-motif accumulators
     let mut motif_acc: Vec<MotifHitSummary> = motifs
         .iter()
