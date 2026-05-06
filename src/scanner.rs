@@ -2,6 +2,10 @@
 //! English: Scan-engine module responsible for parallel record processing, exact motif matching, and result aggregation.
 
 use std::time::Duration;
+use std::sync::mpsc::{channel, Sender};
+use std::sync::Arc;
+use std::thread;
+use aho_corasick::AhoCorasick;
 
 use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
@@ -16,12 +20,15 @@ use std::arch::x86_64::*;
 use crate::cli::CountArgs;
 use crate::io::{open_record_reader, ProgressSnapshot, Record, RecordReader};
 use crate::motif::{compile_motifs, load_motif_file, load_single_motif, CompiledMotif, Strand};
-use crate::output::{
-    create_writer, write_count_summary, write_read_hit_headers, write_read_hit_rows, CountRow,
-    ReadHitRow, TableWriter,
-};
+use crate::output::{create_writer, write_count_summary, write_read_hit_headers, write_read_hit_rows, CountRow, ReadHitRow};
 
 const DEFAULT_CHUNK_SIZE: usize = 512;
+
+/// 简单封装，保存 Aho-Corasick 自动机与 pattern id -> (motif_index, strand, length) 映射
+struct AhoIndex {
+    ac: Arc<AhoCorasick>,
+    map: Arc<Vec<(usize, Strand, usize)>>,
+}
 
 /// 中文：单条 record 扫描后的局部结果，稍后会被合并进全局计数。
 /// English: Per-record scan result that is merged later into the global counters.
@@ -66,20 +73,49 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
 
     let mut reader = open_record_reader(&args.input)?;
     let mut rows = initialize_rows(&motifs);
-    let mut hit_writer = maybe_open_hit_writer(args.report_read_hits.as_deref())?;
+    let (hit_sender, writer_handle) = maybe_spawn_hit_writer(args.report_read_hits.as_deref())?;
     let mut progress =
         ScanProgress::new(&reader, args.progress, "count", &args.input, motifs.len())?;
+
+    // Build Aho-Corasick automaton when many motifs exist to speed up multi-pattern scans
+    let aho_index = if motifs.len() >= 8 {
+        // collect patterns and mapping
+        let mut patterns_owned: Vec<String> = Vec::new();
+        let mut mapping: Vec<(usize, Strand, usize)> = Vec::new();
+        for (i, m) in motifs.iter().enumerate() {
+            let f = String::from_utf8_lossy(&m.forward.sequence).into_owned();
+            mapping.push((i, Strand::Forward, f.len()));
+            patterns_owned.push(f);
+            if let Some(r) = &m.reverse {
+                let rs = String::from_utf8_lossy(&r.sequence).into_owned();
+                mapping.push((i, Strand::Reverse, rs.len()));
+                patterns_owned.push(rs);
+            }
+        }
+        let refs: Vec<&str> = patterns_owned.iter().map(|s| s.as_str()).collect();
+        let ac = AhoCorasick::new(&refs);
+        Some(AhoIndex {
+            ac: Arc::new(ac),
+            map: Arc::new(mapping),
+        })
+    } else {
+        None
+    };
 
     scan_records(
         &mut reader,
         &motifs,
         &mut progress,
-        hit_writer.as_mut(),
+        hit_sender.as_ref(),
+        aho_index.as_ref(),
         &mut rows,
     )?;
 
-    if let Some(writer) = &mut hit_writer {
-        writer.flush()?;
+    // close the sender so the writer thread sees EOF
+    drop(hit_sender);
+    if let Some(handle) = writer_handle {
+        // wait for writer thread to finish flushing
+        handle.join().expect("read-hit writer thread panicked");
     }
     progress.finish();
     write_count_summary(&args.output, &rows)
@@ -87,14 +123,43 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
 
 // 中文：按需创建 read-hit 明细输出器；如果用户没请求，就返回 `None`。
 // English: Creates the optional read-hit writer when requested; otherwise returns `None`.
-fn maybe_open_hit_writer(path: Option<&std::path::Path>) -> Result<Option<TableWriter>> {
+fn maybe_spawn_hit_writer(
+    path: Option<&std::path::Path>,
+) -> Result<(Option<Sender<Vec<ReadHitRow>>>, Option<thread::JoinHandle<()>>)> {
     match path {
         Some(path) => {
-            let mut writer = create_writer(path)?;
-            write_read_hit_headers(&mut writer)?;
-            Ok(Some(writer))
+            let path = path.to_path_buf();
+            let (tx, rx) = channel::<Vec<ReadHitRow>>();
+
+            let handle = thread::spawn(move || {
+                // Writer thread: open writer and consume batches
+                match create_writer(&path) {
+                    Ok(mut writer) => {
+                        if let Err(e) = write_read_hit_headers(&mut writer) {
+                            eprintln!("failed to write read-hit headers: {}", e);
+                            return;
+                        }
+
+                        while let Ok(batch) = rx.recv() {
+                            if let Err(e) = write_read_hit_rows(&mut writer, &batch) {
+                                eprintln!("failed to write read-hit rows: {}", e);
+                                break;
+                            }
+                            if let Err(e) = writer.flush() {
+                                eprintln!("failed to flush read-hit writer: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("failed to create read-hit writer {}: {}", path.display(), e);
+                    }
+                }
+            });
+
+            Ok((Some(tx), Some(handle)))
         }
-        None => Ok(None),
+        None => Ok((None, None)),
     }
 }
 
@@ -115,13 +180,14 @@ fn initialize_rows(motifs: &[CompiledMotif]) -> Vec<CountRow> {
         .collect()
 }
 
-    // 中文：以 chunk 为单位推进整个扫描过程；每个 chunk 内部并行处理，每个 chunk 结束后统一归并结果。
-    // English: Advances the full scan in chunk units; each chunk is processed in parallel and merged only after the chunk finishes.
+// 中文：以 chunk 为单位推进整个扫描过程；每个 chunk 内部并行处理，每个 chunk 结束后统一归并结果。
+// English: Advances the full scan in chunk units; each chunk is processed in parallel and merged only after the chunk finishes.
 fn scan_records(
     reader: &mut RecordReader,
     motifs: &[CompiledMotif],
     progress: &mut ScanProgress,
-    mut hit_writer: Option<&mut TableWriter>,
+    hit_sender: Option<&Sender<Vec<ReadHitRow>>>,
+    aho_index: Option<&AhoIndex>,
     rows: &mut [CountRow],
 ) -> Result<()> {
     loop {
@@ -132,22 +198,29 @@ fn scan_records(
         let chunk_reads = chunk.len() as u64;
         let chunk_bases = chunk.iter().map(|record| record.seq.len() as u64).sum();
 
-        let emit_read_hits = hit_writer.is_some();
-        let record_results: Vec<RecordResult> = chunk
-            .into_par_iter()
-            .map(|record| scan_record(&record, motifs, emit_read_hits))
-            .collect();
+        let emit_read_hits = hit_sender.is_some();
+        let record_results: Vec<RecordResult> = if let Some(aho) = aho_index {
+                chunk
+                    .into_par_iter()
+                    .map(|record| scan_record_aho(&record, motifs, emit_read_hits, aho))
+                .collect()
+        } else {
+            chunk
+                .into_par_iter()
+                .map(|record| scan_record(&record, motifs, emit_read_hits))
+                .collect()
+        };
 
-        let mut chunk_read_hits = Vec::new();
         for record_result in record_results {
             merge_record_result(&record_result, rows);
             if emit_read_hits {
-                chunk_read_hits.extend(record_result.read_hits);
+                if !record_result.read_hits.is_empty() {
+                    if let Some(sender) = hit_sender {
+                        // best-effort: ignore send errors if receiver is closed
+                        let _ = sender.send(record_result.read_hits);
+                    }
+                }
             }
-        }
-
-        if let Some(writer) = hit_writer.as_deref_mut() {
-            write_read_hit_rows(writer, &chunk_read_hits)?;
         }
 
         progress.update(chunk_reads, chunk_bases, reader.progress_snapshot());
@@ -295,11 +368,7 @@ fn merge_record_result(record_result: &RecordResult, rows: &mut [CountRow]) {
 
 // 中文：扫描单条 record 上的所有 motif，并按需要收集 read-level hit 明细。
 // English: Scans all motifs on one record and optionally collects read-level hit details.
-fn scan_record(
-    record: &Record,
-    motifs: &[CompiledMotif],
-    emit_read_hits: bool,
-) -> RecordResult {
+fn scan_record(record: &Record, motifs: &[CompiledMotif], emit_read_hits: bool) -> RecordResult {
     let mut motif_hits = Vec::with_capacity(motifs.len());
     let mut read_hits = Vec::new();
 
@@ -375,6 +444,52 @@ fn append_read_hits(
             position: *position,
             matched_sequence: String::from_utf8_lossy(window).into_owned(),
         });
+    }
+}
+
+// 使用 Aho-Corasick 自动机扫描单条 record（多 pattern 路径）
+fn scan_record_aho(record: &Record, motifs: &[CompiledMotif], collect_positions: bool, aho: &AhoIndex) -> RecordResult {
+    // prepare per-motif accumulators
+    let mut motif_acc: Vec<MotifHitSummary> = motifs
+        .iter()
+        .enumerate()
+        .map(|(i, _)| MotifHitSummary {
+            motif_index: i,
+            total_hits: 0,
+            forward_hits: 0,
+            revcomp_hits: 0,
+            read_has_hit: false,
+        })
+        .collect();
+
+    let mut read_hits = Vec::new();
+    let seq_str = String::from_utf8_lossy(&record.seq).into_owned();
+    for mat in aho.ac.find_iter(&seq_str) {
+        let pid = mat.pattern();
+        if let Some((motif_idx, strand, plen)) = aho.map.get(pid).cloned() {
+            let start = mat.start();
+            motif_acc[motif_idx].total_hits += 1;
+            match strand {
+                Strand::Forward => motif_acc[motif_idx].forward_hits += 1,
+                Strand::Reverse => motif_acc[motif_idx].revcomp_hits += 1,
+            }
+            motif_acc[motif_idx].read_has_hit = true;
+            if collect_positions {
+                let window = &record.seq[start..start + plen];
+                read_hits.push(ReadHitRow {
+                    read_id: record.id.clone(),
+                    motif: motifs[motif_idx].name.clone(),
+                    strand,
+                    position: start,
+                    matched_sequence: String::from_utf8_lossy(window).into_owned(),
+                });
+            }
+        }
+    }
+
+    RecordResult {
+        motif_hits: motif_acc,
+        read_hits,
     }
 }
 
@@ -540,7 +655,11 @@ mod tests {
             false,
         )
         .unwrap();
-        let result = scan_record(&demo_record("r1", "AAAAA", Some(vec![40; 5])), &motifs, false);
+        let result = scan_record(
+            &demo_record("r1", "AAAAA", Some(vec![40; 5])),
+            &motifs,
+            false,
+        );
         assert_eq!(result.motif_hits[0].total_hits, 3);
         assert!(result.motif_hits[0].read_has_hit);
     }
@@ -558,7 +677,11 @@ mod tests {
         )
         .unwrap();
         let reverse = "CACACTATTCTCATAAT";
-        let result = scan_record(&demo_record("r1", reverse, Some(vec![40; reverse.len()])), &motifs, true);
+        let result = scan_record(
+            &demo_record("r1", reverse, Some(vec![40; reverse.len()])),
+            &motifs,
+            true,
+        );
         assert_eq!(result.motif_hits[0].revcomp_hits, 1);
     }
 
@@ -574,7 +697,11 @@ mod tests {
             false,
         )
         .unwrap();
-        let result = scan_record(&demo_record("r1", "ATGNN", Some(vec![40; 5])), &motifs, false);
+        let result = scan_record(
+            &demo_record("r1", "ATGNN", Some(vec![40; 5])),
+            &motifs,
+            false,
+        );
         assert_eq!(result.motif_hits[0].total_hits, 0);
     }
 
@@ -588,5 +715,37 @@ mod tests {
             pattern,
             b"ATTATGAGAATAGTGTGATTATGAGAATAGTGTA"
         ));
+    }
+
+    #[test]
+    // Integration-ish test: run run_count on test/ sample data and ensure outputs are produced
+    fn run_count_writes_outputs() {
+        use crate::cli::CountArgs;
+        use tempfile::tempdir;
+
+        let tmp = tempdir().unwrap();
+        let out_count = tmp.path().join("count.csv");
+        let out_hits = tmp.path().join("read_hits.csv");
+
+        let args = CountArgs {
+            input: std::path::PathBuf::from("test/reads_sample.fastq.gz"),
+            motif: None,
+            motif_name: "motif".to_string(),
+            motifs: Some(std::path::PathBuf::from("test/motifs.csv")),
+            revcomp: true,
+            threads: 1,
+            progress: false,
+            output: out_count.clone(),
+            report_read_hits: Some(out_hits.clone()),
+        };
+
+        // run
+        super::run_count(&args).expect("run_count failed");
+
+        // check files exist and contain expected header
+        let count_txt = std::fs::read_to_string(out_count).unwrap();
+        assert!(count_txt.contains("motif,sequence,length"));
+        let hits_txt = std::fs::read_to_string(out_hits).unwrap();
+        assert!(hits_txt.contains("read_id,motif,strand,position,matched_sequence"));
     }
 }

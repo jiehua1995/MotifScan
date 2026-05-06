@@ -1,0 +1,181 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+    tags: ['v*']
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  checks:
+    name: Checks (fmt / clippy / test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+      - name: Rustfmt check
+        run: cargo fmt -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --all --verbose
+
+  build:
+    name: Build artifacts
+    needs: checks
+    runs-on: ${{ matrix.os }}
+    outputs:
+      do_release: ${{ steps.check.outputs.do_release }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+      - name: Check commit message and tag
+        id: check
+        run: |
+          echo "GITHUB_REF=${GITHUB_REF}"
+          MSG=""
+          if git rev-parse --verify HEAD >/dev/null 2>&1; then
+            MSG=$(git --no-pager log -1 --pretty=%B || true)
+          fi
+          echo "commit_message=${MSG}"
+          IS_RELEASE=false
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then IS_RELEASE=true; fi
+          if echo "${MSG}" | grep -qi 'release'; then IS_RELEASE=true; fi
+          if [ "$IS_RELEASE" = true ]; then
+            echo "do_release=true" >> $GITHUB_OUTPUT
+          else
+            echo "do_release=false" >> $GITHUB_OUTPUT
+          fi
+      - name: Determine version
+        id: get_version
+        run: |
+          VERSION=$(awk -F\" '/^version =/ {print $2; exit}' Cargo.toml)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Build release
+        run: cargo build --release
+      - name: Package artifact (Linux/Mac)
+        if: runner.os != 'Windows' && steps.check.outputs.do_release == 'true'
+        run: |
+          mkdir -p release
+          PLAT=linux
+          if [ "${{ runner.os }}" = "macOS" ]; then PLAT=macos; fi
+          tar -czf release/motifscan-${VERSION}-${PLAT}.tar.gz -C target/release motifscan
+          sha256sum release/motifscan-${VERSION}-${PLAT}.tar.gz > release/motifscan-${VERSION}-${PLAT}.sha256
+      - name: Package artifact (Windows)
+        if: runner.os == 'Windows' && steps.check.outputs.do_release == 'true'
+        shell: powershell
+        run: |
+          $env:VERSION = "$env:VERSION"
+          New-Item -ItemType Directory -Force -Path release
+          Compress-Archive -Path target\release\motifscan.exe -DestinationPath release\motifscan-${env:VERSION}-windows.zip
+          $hash = (Get-FileHash -Algorithm SHA256 "release\\motifscan-${env:VERSION}-windows.zip").Hash
+          $hash | Out-File -Encoding utf8 "release\\motifscan-${env:VERSION}-windows.sha256"
+      - name: Upload build artifact
+        if: steps.check.outputs.do_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: motifscan-${{ env.VERSION }}-${{ matrix.os }}
+          path: release/*
+
+  release:
+    name: Create GitHub Release and upload artifacts
+    needs: build
+    runs-on: ubuntu-latest
+    if: needs.build.outputs.do_release == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get version from Cargo.toml
+        id: get_version
+        run: |
+          VERSION=$(awk -F\" '/^version =/ {print $2; exit}' Cargo.toml)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create release for tag
+        id: create_release
+        uses: actions/create-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ steps.get_version.outputs.version }}
+          body: "Automated release for version ${{ steps.get_version.outputs.version }}"
+          draft: false
+          prerelease: false
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: motifscan-${{ steps.get_version.outputs.version }}-ubuntu-latest
+          path: artifacts/linux
+
+      - name: Download mac artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: motifscan-${{ steps.get_version.outputs.version }}-macos-latest
+          path: artifacts/macos
+
+      - name: Download windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: motifscan-${{ steps.get_version.outputs.version }}-windows-latest
+          path: artifacts/windows
+
+      - name: Upload linux asset
+        uses: actions/upload-release-asset@v2
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/linux/motifscan-${{ steps.get_version.outputs.version }}-linux.tar.gz
+          asset_name: motifscan-${{ steps.get_version.outputs.version }}-linux.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload linux checksum
+        uses: actions/upload-release-asset@v2
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/linux/motifscan-${{ steps.get_version.outputs.version }}-linux.sha256
+          asset_name: motifscan-${{ steps.get_version.outputs.version }}-linux.sha256
+          asset_content_type: text/plain
+
+      - name: Upload mac asset
+        uses: actions/upload-release-asset@v2
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/macos/motifscan-${{ steps.get_version.outputs.version }}-macos.tar.gz
+          asset_name: motifscan-${{ steps.get_version.outputs.version }}-macos.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload mac checksum
+        uses: actions/upload-release-asset@v2
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/macos/motifscan-${{ steps.get_version.outputs.version }}-macos.sha256
+          asset_name: motifscan-${{ steps.get_version.outputs.version }}-macos.sha256
+          asset_content_type: text/plain
+
+      - name: Upload windows asset
+        uses: actions/upload-release-asset@v2
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/windows/motifscan-${{ steps.get_version.outputs.version }}-windows.zip
+          asset_name: motifscan-${{ steps.get_version.outputs.version }}-windows.zip
+          asset_content_type: application/zip
+
+      - name: Upload windows checksum
+        uses: actions/upload-release-asset@v2
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/windows/motifscan-${{ steps.get_version.outputs.version }}-windows.sha256
+          asset_name: motifscan-${{ steps.get_version.outputs.version }}-windows.sha256
+          asset_content_type: text/plain

@@ -23,13 +23,8 @@ pub const COUNT_HEADERS: &[&str] = &[
 
 /// 中文：read-level hit 明细表的固定列顺序。
 /// English: Fixed column order for the read-level hit CSV.
-pub const READ_HIT_HEADERS: &[&str] = &[
-    "read_id",
-    "motif",
-    "strand",
-    "position",
-    "matched_sequence",
-];
+pub const READ_HIT_HEADERS: &[&str] =
+    &["read_id", "motif", "strand", "position", "matched_sequence"];
 
 /// 中文：单个 motif 的汇总统计行。
 /// English: One summary row aggregating hit statistics for a single motif.
@@ -77,8 +72,8 @@ pub fn create_writer(path: &Path) -> Result<TableWriter> {
         .from_writer(Box::new(BufWriter::new(file))))
 }
 
-    /// 中文：把 motif 汇总结果写入最终的 count CSV 文件。
-    /// English: Writes the final motif summary rows into the count CSV file.
+/// 中文：把 motif 汇总结果写入最终的 count CSV 文件。
+/// English: Writes the final motif summary rows into the count CSV file.
 pub fn write_count_summary(path: &Path, rows: &[CountRow]) -> Result<()> {
     let mut writer = create_writer(path)?;
     writer.write_record(COUNT_HEADERS)?;

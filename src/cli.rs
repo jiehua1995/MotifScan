@@ -60,13 +60,25 @@ pub enum Command {
 #[derive(Debug, Clone, Args)]
 #[command(about = "Count exact motif hits in reads", long_about = None)]
 pub struct CountArgs {
-    #[arg(short = 'i', long, help = "Input read file in FASTA, FASTQ, FASTA.GZ, or FASTQ.GZ format")]
+    #[arg(
+        short = 'i',
+        long,
+        help = "Input read file in FASTA, FASTQ, FASTA.GZ, or FASTQ.GZ format"
+    )]
     pub input: std::path::PathBuf,
-    #[arg(long, conflicts_with = "motifs", help = "Single motif sequence provided on the command line")]
+    #[arg(
+        long,
+        conflicts_with = "motifs",
+        help = "Single motif sequence provided on the command line"
+    )]
     pub motif: Option<String>,
     #[arg(long, default_value = "motif", help = "Output name used with --motif")]
     pub motif_name: String,
-    #[arg(long, conflicts_with = "motif", help = "Two-column CSV file containing motif name and sequence")]
+    #[arg(
+        long,
+        conflicts_with = "motif",
+        help = "Two-column CSV file containing motif name and sequence"
+    )]
     pub motifs: Option<std::path::PathBuf>,
     #[arg(long, help = "Also scan the reverse complement of each motif")]
     pub revcomp: bool,

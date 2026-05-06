@@ -118,3 +118,30 @@ read_id,motif,strand,position,matched_sequence
 - Palindromic motifs are not double-counted in reverse-complement mode.
 - If a motif is longer than a read, it is skipped for that read.
 - FASTQ currently expects the standard 4-line format.
+
+## 下载发布版（预编译二进制）与校验
+
+如果你不想自己从源码打包编译，可以直接从 GitHub Releases 下载预编译的发布包。发布包一般以语义版本号与平台命名，例如：
+
+- `motifscan-0.1.2-linux.tar.gz`
+- `motifscan-0.1.2-macos.tar.gz`
+- `motifscan-0.1.2-windows.zip`
+
+每个发布包通常会附带一个 SHA256 校验文件（扩展名为 `.sha256`）。下载后请务必校验文件完整性：
+
+Linux / macOS:
+
+```bash
+sha256sum -c motifscan-0.1.2-linux.sha256
+# 或者
+shasum -a 256 -c motifscan-0.1.2-linux.sha256
+```
+
+Windows (PowerShell)：
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\motifscan-0.1.2-windows.zip
+# 将输出的哈希值与 motifscan-0.1.2-windows.sha256 中记录的值进行比对
+```
+
+如果你需要从源码自己打包（例如为了自定义编译选项或特定平台优化），请参见仓库下的 `doc/release_cn.md` 获取中文打包与发布步骤说明。

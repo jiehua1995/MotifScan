@@ -102,9 +102,24 @@ pub fn load_motif_file(path: &Path) -> Result<Vec<RawMotif>> {
             )
         }
 
+        let name = record.get(0).ok_or_else(|| {
+            anyhow!(
+                "invalid motif CSV record {} in {}: missing name column",
+                record_number + 1,
+                path.display()
+            )
+        })?;
+        let sequence_field = record.get(1).ok_or_else(|| {
+            anyhow!(
+                "invalid motif CSV record {} in {}: missing sequence column",
+                record_number + 1,
+                path.display()
+            )
+        })?;
+
         let raw = RawMotif {
-            name: record.get(0).unwrap().to_string(),
-            sequence: record.get(1).unwrap().to_string(),
+            name: name.to_string(),
+            sequence: sequence_field.to_string(),
         };
 
         motifs.push(raw);
@@ -129,8 +144,8 @@ pub fn compile_motifs(
         .collect()
 }
 
-    /// 中文：编译单个 motif，完成标准化、合法性检查和反向互补预计算。
-    /// English: Compiles a single motif by normalizing it, validating allowed bases, and precomputing the reverse complement when requested.
+/// 中文：编译单个 motif，完成标准化、合法性检查和反向互补预计算。
+/// English: Compiles a single motif by normalizing it, validating allowed bases, and precomputing the reverse complement when requested.
 pub fn compile_motif(raw: &RawMotif, include_revcomp: bool) -> Result<CompiledMotif> {
     let sequence = normalize_sequence(&raw.sequence);
     if sequence.is_empty() {
@@ -155,7 +170,8 @@ pub fn compile_motif(raw: &RawMotif, include_revcomp: bool) -> Result<CompiledMo
 
     Ok(CompiledMotif {
         name: raw.name.clone(),
-        sequence: String::from_utf8(sequence.clone()).unwrap(),
+        sequence: String::from_utf8(sequence.clone())
+            .with_context(|| format!("motif '{}' contains invalid UTF-8", raw.name))?,
         forward,
         reverse,
         is_palindrome,
@@ -230,8 +246,8 @@ mod tests {
     use super::{compile_motif, is_header, load_motif_file, reverse_complement, RawMotif};
 
     use csv::StringRecord;
-    use tempfile::NamedTempFile;
     use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     // 中文：验证标准碱基的反向互补实现是否正确。

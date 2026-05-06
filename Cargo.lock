@@ -4,8 +4,9 @@ version = 4
 
 [[package]]
 name = "MotifScan"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "clap",
  "csv",
@@ -22,6 +23,15 @@ name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
+name = "aho-corasick"
+version = "0.7.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc936419f96fa211c1b9166887b38e5e40b19958e5b895be7c1f93adec7071ac"
+dependencies = [
+ "memchr",
+]
 
 [[package]]
 name = "anstream"

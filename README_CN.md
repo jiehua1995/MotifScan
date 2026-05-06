@@ -15,30 +15,39 @@ cargo build --release
 
 可执行文件路径：
 
-```bash
-./target/release/motifscan
-```
-
-查看版本：
 
 ```bash
 motifscan -v
 motifscan --version
-```
-
-## 引用
 
 ```bibtex
-@software{motifscan,
-  author = {jiehua1995},
-  title = {MotifScan},
-  url = {https://github.com/jiehua1995/MotifScan},
-  version = {0.1.0}
-}
+## 下载发布版（预编译二进制）与校验
+
+如果你不想自行从源码打包编译，可以直接从 GitHub Releases 下载预编译的发布包。发布包一般以版本号与平台命名，例如：
+
+- `motifscan-0.1.2-linux.tar.gz`
+- `motifscan-0.1.2-macos.tar.gz`
+- `motifscan-0.1.2-windows.zip`
+
+每个发布包通常会附带一个 SHA256 校验文件（扩展名为 `.sha256`）。下载后请务必校验文件完整性：
+
+Linux / macOS：
+
+```bash
+sha256sum -c motifscan-0.1.2-linux.sha256
+# 或
+shasum -a 256 -c motifscan-0.1.2-linux.sha256
 ```
 
-## 快速使用
+Windows (PowerShell)：
 
+```powershell
+Get-FileHash -Algorithm SHA256 .\motifscan-0.1.2-windows.zip
+# 比对 motifscan-0.1.2-windows.sha256 中的值
+```
+
+如果你需要从源码自行打包发布，请参考仓库 `doc/release_cn.md` 中的中文步骤说明。
+ 
 扫描多个 motif：
 
 ```bash
@@ -118,4 +127,29 @@ read_id,motif,strand,position,matched_sequence
 - 回文 motif 在反向互补模式下不会重复计数。
 - 如果 motif 比 read 更长，会跳过该 read。
 - FASTQ 当前按标准 4 行格式处理。
+
+## 发布产物与校验
+
+CI 生成的 release 包会使用 `Cargo.toml` 中的语义版本号并包含平台标识，例如：
+
+- `motifscan-0.1.2-linux.tar.gz`
+- `motifscan-0.1.2-macos.tar.gz`
+- `motifscan-0.1.2-windows.zip`
+
+每个包会同时生成一个 SHA256 校验文件（`.sha256`），下载后建议校验：
+
+Linux / macOS：
+
+```bash
+sha256sum -c motifscan-0.1.2-linux.sha256
+# 或
+shasum -a 256 -c motifscan-0.1.2-linux.sha256
+```
+
+Windows (PowerShell)：
+
+```powershell
+Get-FileHash -Algorithm SHA256 .\motifscan-0.1.2-windows.zip
+# 比对 motifscan-0.1.2-windows.sha256 中的值
+```
 
