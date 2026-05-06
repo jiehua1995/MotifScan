@@ -42,16 +42,20 @@ jobs:
           profile: minimal
       - name: Check commit message and tag
         id: check
+        shell: bash
         run: |
-          echo "GITHUB_REF=${GITHUB_REF}"
+          # Determine whether this workflow should perform a release (tag push or commit message contains 'release')
           MSG=""
           if git rev-parse --verify HEAD >/dev/null 2>&1; then
             MSG=$(git --no-pager log -1 --pretty=%B || true)
           fi
-          echo "commit_message=${MSG}"
           IS_RELEASE=false
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then IS_RELEASE=true; fi
-          if echo "${MSG}" | grep -qi 'release'; then IS_RELEASE=true; fi
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            IS_RELEASE=true
+          fi
+          if echo "${MSG}" | grep -qi 'release'; then
+            IS_RELEASE=true
+          fi
           if [ "$IS_RELEASE" = true ]; then
             echo "do_release=true" >> $GITHUB_OUTPUT
           else
