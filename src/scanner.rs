@@ -726,17 +726,38 @@ mod tests {
     // Integration-ish test: run run_count on test/ sample data and ensure outputs are produced
     fn run_count_writes_outputs() {
         use crate::cli::CountArgs;
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
         use tempfile::tempdir;
 
         let tmp = tempdir().unwrap();
         let out_count = tmp.path().join("count.csv");
         let out_hits = tmp.path().join("read_hits.csv");
 
+        // create a small FASTQ and gzip it
+        let fq_path = tmp.path().join("reads_sample.fastq.gz");
+        let fq_contents = b"@r1\nATTATGAGAATAGTGTG\n+\nFFFFFFFFFFFFFFFFF\n@r2\nATGAA\n+\nFFFFF\n";
+        {
+            let fq_file = std::fs::File::create(&fq_path).unwrap();
+            let mut enc = GzEncoder::new(fq_file, Compression::default());
+            enc.write_all(fq_contents).unwrap();
+            enc.finish().unwrap();
+        }
+
+        // create a motif CSV
+        let motifs_path = tmp.path().join("motifs.csv");
+        std::fs::write(
+            &motifs_path,
+            "name,sequence\nmotif1,ATTATGAGAATAGTGTG\nmotif2,ATGAA\n",
+        )
+        .unwrap();
+
         let args = CountArgs {
-            input: std::path::PathBuf::from("test/reads_sample.fastq.gz"),
+            input: fq_path,
             motif: None,
             motif_name: "motif".to_string(),
-            motifs: Some(std::path::PathBuf::from("test/motifs.csv")),
+            motifs: Some(motifs_path),
             revcomp: true,
             threads: 1,
             progress: false,
