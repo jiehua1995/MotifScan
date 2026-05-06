@@ -27,6 +27,8 @@ use crate::output::{
 
 const DEFAULT_CHUNK_SIZE: usize = 512;
 
+type HitWriterResult = (Option<Sender<Vec<ReadHitRow>>>, Option<thread::JoinHandle<()>>);
+
 /// 简单封装，保存 Aho-Corasick 自动机与 pattern id -> (motif_index, strand, length) 映射
 struct AhoIndex {
     ac: Arc<AhoCorasick>,
@@ -126,12 +128,7 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
 
 // 中文：按需创建 read-hit 明细输出器；如果用户没请求，就返回 `None`。
 // English: Creates the optional read-hit writer when requested; otherwise returns `None`.
-fn maybe_spawn_hit_writer(
-    path: Option<&std::path::Path>,
-) -> Result<(
-    Option<Sender<Vec<ReadHitRow>>>,
-    Option<thread::JoinHandle<()>>,
-)> {
+fn maybe_spawn_hit_writer(path: Option<&std::path::Path>) -> Result<HitWriterResult> {
     match path {
         Some(path) => {
             let path = path.to_path_buf();
@@ -219,12 +216,10 @@ fn scan_records(
 
         for record_result in record_results {
             merge_record_result(&record_result, rows);
-            if emit_read_hits {
-                if !record_result.read_hits.is_empty() {
-                    if let Some(sender) = hit_sender {
-                        // best-effort: ignore send errors if receiver is closed
-                        let _ = sender.send(record_result.read_hits);
-                    }
+            if emit_read_hits && !record_result.read_hits.is_empty() {
+                if let Some(sender) = hit_sender {
+                    // best-effort: ignore send errors if receiver is closed
+                    let _ = sender.send(record_result.read_hits);
                 }
             }
         }
@@ -380,17 +375,15 @@ fn scan_record(record: &Record, motifs: &[CompiledMotif], emit_read_hits: bool) 
 
     for (motif_index, motif) in motifs.iter().enumerate() {
         let forward_scan = scan_pattern(record, &motif.forward, emit_read_hits);
-        if forward_scan.hit_count > 0 {
-            if emit_read_hits {
-                append_read_hits(
-                    &mut read_hits,
-                    record,
-                    motif,
-                    Strand::Forward,
-                    &forward_scan.positions,
-                    motif.len(),
-                );
-            }
+        if forward_scan.hit_count > 0 && emit_read_hits {
+            append_read_hits(
+                &mut read_hits,
+                record,
+                motif,
+                Strand::Forward,
+                &forward_scan.positions,
+                motif.len(),
+            );
         }
 
         let reverse_scan = motif
@@ -398,17 +391,15 @@ fn scan_record(record: &Record, motifs: &[CompiledMotif], emit_read_hits: bool) 
             .as_ref()
             .map(|pattern| scan_pattern(record, pattern, emit_read_hits))
             .unwrap_or_default();
-        if reverse_scan.hit_count > 0 {
-            if emit_read_hits {
-                append_read_hits(
-                    &mut read_hits,
-                    record,
-                    motif,
-                    Strand::Reverse,
-                    &reverse_scan.positions,
-                    motif.len(),
-                );
-            }
+        if reverse_scan.hit_count > 0 && emit_read_hits {
+            append_read_hits(
+                &mut read_hits,
+                record,
+                motif,
+                Strand::Reverse,
+                &reverse_scan.positions,
+                motif.len(),
+            );
         }
 
         let forward_hits = forward_scan.hit_count;

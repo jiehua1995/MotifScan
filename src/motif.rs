@@ -48,6 +48,12 @@ impl CompiledMotif {
     pub fn len(&self) -> usize {
         self.forward.sequence.len()
     }
+
+    /// Returns true when the motif has zero length.
+    /// Added to satisfy `clippy::len_without_is_empty`.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// 中文：把命令行提供的单个 motif 包装成统一的 `RawMotif` 列表接口。
