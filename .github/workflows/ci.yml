@@ -140,7 +140,7 @@ jobs:
           path: artifacts/windows
 
       - name: Upload linux asset
-        uses: actions/upload-release-asset@v2
+        uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: artifacts/linux/motifscan-${{ steps.get_version.outputs.version }}-linux.tar.gz
@@ -148,7 +148,7 @@ jobs:
           asset_content_type: application/gzip
 
       - name: Upload linux checksum
-        uses: actions/upload-release-asset@v2
+        uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: artifacts/linux/motifscan-${{ steps.get_version.outputs.version }}-linux.sha256
@@ -156,7 +156,7 @@ jobs:
           asset_content_type: text/plain
 
       - name: Upload mac asset
-        uses: actions/upload-release-asset@v2
+        uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: artifacts/macos/motifscan-${{ steps.get_version.outputs.version }}-macos.tar.gz
@@ -164,7 +164,7 @@ jobs:
           asset_content_type: application/gzip
 
       - name: Upload mac checksum
-        uses: actions/upload-release-asset@v2
+        uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: artifacts/macos/motifscan-${{ steps.get_version.outputs.version }}-macos.sha256
@@ -172,7 +172,7 @@ jobs:
           asset_content_type: text/plain
 
       - name: Upload windows asset
-        uses: actions/upload-release-asset@v2
+        uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: artifacts/windows/motifscan-${{ steps.get_version.outputs.version }}-windows.zip
@@ -180,7 +180,7 @@ jobs:
           asset_content_type: application/zip
 
       - name: Upload windows checksum
-        uses: actions/upload-release-asset@v2
+        uses: actions/upload-release-asset@v1
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
           asset_path: artifacts/windows/motifscan-${{ steps.get_version.outputs.version }}-windows.sha256
