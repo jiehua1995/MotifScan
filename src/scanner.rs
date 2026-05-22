@@ -1,16 +1,16 @@
-//! 中文：扫描引擎模块，负责并行读取 records、执行 exact motif 匹配，并汇总输出结果。
-//! English: Scan-engine module responsible for parallel record processing, exact motif matching, and result aggregation.
+//! Scan-engine module responsible for parallel record processing, exact motif matching, and result aggregation.
 
 use aho_corasick::AhoCorasick;
+use anyhow::{anyhow, Result};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use anyhow::Result;
 use indicatif::{ProgressBar, ProgressStyle};
 use memchr::memchr_iter;
 use rayon::prelude::*;
+use tracing::{debug, info};
 
 #[cfg(target_arch = "x86")]
 use std::arch::x86::*;
@@ -30,24 +30,23 @@ const DEFAULT_CHUNK_SIZE: usize = 512;
 type HitWriterResult = (
     Option<Sender<Vec<ReadHitRow>>>,
     Option<thread::JoinHandle<()>>,
+    Option<std::sync::mpsc::Receiver<Result<()>>>,
 );
 
-/// 简单封装，保存 Aho-Corasick 自动机与 pattern id -> (motif_index, strand, length) 映射
+/// Wrapper storing the Aho-Corasick automaton and pattern-id to (motif index, strand, length) mapping.
 struct AhoIndex {
     ac: Arc<AhoCorasick>,
     map: Arc<Vec<(usize, Strand, usize)>>,
 }
 
-/// 中文：单条 record 扫描后的局部结果，稍后会被合并进全局计数。
-/// English: Per-record scan result that is merged later into the global counters.
+/// Per-record scan result that is merged later into the global counters.
 #[derive(Debug, Clone)]
 struct RecordResult {
     motif_hits: Vec<MotifHitSummary>,
     read_hits: Vec<ReadHitRow>,
 }
 
-/// 中文：单个 motif 在单条 record 上的统计摘要。
-/// English: Summary of how one motif behaved on one record.
+/// Summary of how one motif behaved on one record.
 #[derive(Debug, Clone)]
 struct MotifHitSummary {
     motif_index: usize,
@@ -57,37 +56,49 @@ struct MotifHitSummary {
     read_has_hit: bool,
 }
 
-/// 中文：某条模式扫描的原始结果，包括命中次数以及可选的位置列表。
-/// English: Raw result for scanning one pattern, including hit count and an optional list of positions.
+/// Raw result for scanning one pattern, including hit count and an optional list of positions.
 #[derive(Debug, Clone, Default)]
 struct PatternScanResult {
     hit_count: u64,
     positions: Vec<usize>,
 }
 
-/// 中文：`count` 子命令的主执行入口。
-/// English: Main execution entry for the `count` subcommand.
+/// Main execution entry for the `count` subcommand.
 ///
-/// 中文：这个函数负责验证参数、加载 motif、打开输入流、驱动扫描循环，并把最终汇总结果写成 CSV。
-/// English: This function validates arguments, loads motifs, opens the input stream, drives the scan loop, and writes the final aggregated CSV output.
+/// This function validates arguments, loads motifs, opens the input stream, drives the scan loop, and writes the final aggregated CSV output.
 pub fn run_count(args: &CountArgs) -> Result<()> {
     args.validate()?;
+    info!(
+        input = %args.input.display(),
+        has_single_motif = args.motif.is_some(),
+        has_motif_file = args.motifs.is_some(),
+        revcomp = args.revcomp,
+        threads = args.threads,
+        read_hit_report = args.report_read_hits.is_some(),
+        "starting motif count run"
+    );
+
     let raw_motifs = if let Some(sequence) = &args.motif {
         load_single_motif(&args.motif_name, sequence)?
     } else {
         load_motif_file(args.motifs.as_ref().unwrap())?
     };
+    info!(motif_count = raw_motifs.len(), "loaded motifs");
     let motifs = compile_motifs(&raw_motifs, args.revcomp)?;
+    info!(
+        compiled_motifs = motifs.len(),
+        revcomp_enabled = args.revcomp,
+        "compiled motifs"
+    );
 
     let mut reader = open_record_reader(&args.input)?;
     let mut rows = initialize_rows(&motifs);
-    let (hit_sender, writer_handle) = maybe_spawn_hit_writer(args.report_read_hits.as_deref())?;
+    let (hit_sender, writer_handle, writer_status) =
+        maybe_spawn_hit_writer(args.report_read_hits.as_deref())?;
     let mut progress =
         ScanProgress::new(&reader, args.progress, "count", &args.input, motifs.len())?;
 
-    // Build Aho-Corasick automaton when many motifs exist to speed up multi-pattern scans
     let aho_index = if motifs.len() >= 8 {
-        // collect patterns and mapping
         let mut patterns_owned: Vec<String> = Vec::new();
         let mut mapping: Vec<(usize, Strand, usize)> = Vec::new();
         for (i, m) in motifs.iter().enumerate() {
@@ -102,15 +113,23 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
         }
         let refs: Vec<&str> = patterns_owned.iter().map(|s| s.as_str()).collect();
         let ac = AhoCorasick::new(&refs);
+        info!(
+            pattern_count = refs.len(),
+            "enabled aho-corasick acceleration"
+        );
         Some(AhoIndex {
             ac: Arc::new(ac),
             map: Arc::new(mapping),
         })
     } else {
+        info!(
+            pattern_count = motifs.len(),
+            "using direct exact matching path"
+        );
         None
     };
 
-    scan_records(
+    let stats = scan_records(
         &mut reader,
         &motifs,
         &mut progress,
@@ -119,58 +138,77 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
         &mut rows,
     )?;
 
-    // close the sender so the writer thread sees EOF
     drop(hit_sender);
     if let Some(handle) = writer_handle {
-        // wait for writer thread to finish flushing
-        handle.join().expect("read-hit writer thread panicked");
+        handle
+            .join()
+            .map_err(|_| anyhow!("read-hit writer thread panicked"))?;
+    }
+    if let Some(status_rx) = writer_status {
+        status_rx
+            .recv()
+            .map_err(|_| anyhow!("read-hit writer thread exited without reporting status"))??;
+        info!("read-hit report writer finished successfully");
     }
     progress.finish();
-    write_count_summary(&args.output, &rows)
+    write_count_summary(&args.output, &rows)?;
+
+    let total_hits: u64 = rows.iter().map(|row| row.total_hits).sum();
+    let read_hits: u64 = rows.iter().map(|row| row.reads_with_hit).sum();
+    info!(
+        reads_processed = stats.reads_processed,
+        bases_processed = stats.bases_processed,
+        chunk_count = stats.chunks_processed,
+        motifs = rows.len(),
+        reads_with_hit = read_hits,
+        total_hits = total_hits,
+        output = %args.output.display(),
+        "finished motif count run"
+    );
+
+    Ok(())
 }
 
-// 中文：按需创建 read-hit 明细输出器；如果用户没请求，就返回 `None`。
-// English: Creates the optional read-hit writer when requested; otherwise returns `None`.
+// Creates the optional read-hit writer when requested; otherwise returns `None`.
 fn maybe_spawn_hit_writer(path: Option<&std::path::Path>) -> Result<HitWriterResult> {
     match path {
         Some(path) => {
             let path = path.to_path_buf();
             let (tx, rx) = channel::<Vec<ReadHitRow>>();
+            let (status_tx, status_rx) = channel::<Result<()>>();
 
             let handle = thread::spawn(move || {
-                // Writer thread: open writer and consume batches
-                match create_writer(&path) {
-                    Ok(mut writer) => {
-                        if let Err(e) = write_read_hit_headers(&mut writer) {
-                            eprintln!("failed to write read-hit headers: {}", e);
-                            return;
-                        }
+                let result = (|| -> Result<()> {
+                    let mut writer = create_writer(&path)?;
+                    write_read_hit_headers(&mut writer)?;
 
-                        while let Ok(batch) = rx.recv() {
-                            if let Err(e) = write_read_hit_rows(&mut writer, &batch) {
-                                eprintln!("failed to write read-hit rows: {}", e);
-                                break;
-                            }
-                            if let Err(e) = writer.flush() {
-                                eprintln!("failed to flush read-hit writer: {}", e);
-                                break;
-                            }
-                        }
+                    let mut batches = 0usize;
+                    let mut rows_written = 0usize;
+                    while let Ok(batch) = rx.recv() {
+                        rows_written += batch.len();
+                        batches += 1;
+                        write_read_hit_rows(&mut writer, &batch)?;
                     }
-                    Err(e) => {
-                        eprintln!("failed to create read-hit writer {}: {}", path.display(), e);
-                    }
-                }
+                    writer.flush()?;
+                    info!(
+                        output = %path.display(),
+                        batches = batches,
+                        rows_written = rows_written,
+                        "finished read-hit report"
+                    );
+                    Ok(())
+                })();
+
+                let _ = status_tx.send(result);
             });
 
-            Ok((Some(tx), Some(handle)))
+            Ok((Some(tx), Some(handle), Some(status_rx)))
         }
-        None => Ok((None, None)),
+        None => Ok((None, None, None)),
     }
 }
 
-// 中文：根据 motif 列表预先创建汇总行，后续扫描时只需原地累加。
-// English: Pre-allocates summary rows from the motif list so later scan passes can update them in place.
+// Pre-allocates summary rows from the motif list so later scan passes can update them in place.
 fn initialize_rows(motifs: &[CompiledMotif]) -> Vec<CountRow> {
     motifs
         .iter()
@@ -186,8 +224,7 @@ fn initialize_rows(motifs: &[CompiledMotif]) -> Vec<CountRow> {
         .collect()
 }
 
-// 中文：以 chunk 为单位推进整个扫描过程；每个 chunk 内部并行处理，每个 chunk 结束后统一归并结果。
-// English: Advances the full scan in chunk units; each chunk is processed in parallel and merged only after the chunk finishes.
+// Advances the full scan in chunk units; each chunk is processed in parallel and merged only after the chunk finishes.
 fn scan_records(
     reader: &mut RecordReader,
     motifs: &[CompiledMotif],
@@ -195,7 +232,8 @@ fn scan_records(
     hit_sender: Option<&Sender<Vec<ReadHitRow>>>,
     aho_index: Option<&AhoIndex>,
     rows: &mut [CountRow],
-) -> Result<()> {
+) -> Result<ScanStats> {
+    let mut stats = ScanStats::default();
     loop {
         let chunk = reader.next_chunk(DEFAULT_CHUNK_SIZE)?;
         if chunk.is_empty() {
@@ -203,6 +241,9 @@ fn scan_records(
         }
         let chunk_reads = chunk.len() as u64;
         let chunk_bases = chunk.iter().map(|record| record.seq.len() as u64).sum();
+        stats.reads_processed += chunk_reads;
+        stats.bases_processed += chunk_bases;
+        stats.chunks_processed += 1;
 
         let emit_read_hits = hit_sender.is_some();
         let record_results: Vec<RecordResult> = if let Some(aho) = aho_index {
@@ -228,20 +269,30 @@ fn scan_records(
         }
 
         progress.update(chunk_reads, chunk_bases, reader.progress_snapshot());
+        debug!(
+            chunk = stats.chunks_processed,
+            chunk_reads, chunk_bases, "processed scan chunk"
+        );
     }
 
-    Ok(())
+    Ok(stats)
 }
 
-/// 中文：进度展示状态；关闭时用 `Disabled` 避免热路径里到处判断具体组件。
-/// English: Progress-report state; the `Disabled` variant keeps the hot path free from UI-specific branching details.
+/// Summary statistics collected during the scan.
+#[derive(Debug, Default, Clone, Copy)]
+struct ScanStats {
+    reads_processed: u64,
+    bases_processed: u64,
+    chunks_processed: u64,
+}
+
+/// Progress-report state; the `Disabled` variant keeps the hot path free from UI-specific branching details.
 enum ScanProgress {
     Enabled(ProgressState),
     Disabled,
 }
 
-/// 中文：进度条运行时状态，保存累计 reads、碱基数和界面展示对象。
-/// English: Runtime progress-bar state storing cumulative reads, bases, and the UI handle itself.
+/// Runtime progress-bar state storing cumulative reads, bases, and the UI handle itself.
 struct ProgressState {
     bar: ProgressBar,
     reads_processed: u64,
@@ -252,8 +303,7 @@ struct ProgressState {
 }
 
 impl ScanProgress {
-    /// 中文：根据用户是否开启 `--progress` 来创建真实进度条或空实现。
-    /// English: Creates either a real progress bar or a disabled no-op state depending on `--progress`.
+    /// Creates either a real progress bar or a disabled no-op state depending on `--progress`.
     fn new(
         reader: &RecordReader,
         enabled: bool,
@@ -290,8 +340,7 @@ impl ScanProgress {
         Ok(Self::Enabled(state))
     }
 
-    /// 中文：在处理完一个 chunk 后刷新累计进度和界面文本。
-    /// English: Updates cumulative progress and refreshes the progress-bar message after one chunk completes.
+    /// Updates cumulative progress and refreshes the progress-bar message after one chunk completes.
     fn update(&mut self, chunk_reads: u64, chunk_bases: u64, snapshot: ProgressSnapshot) {
         if let Self::Enabled(state) = self {
             state.reads_processed += chunk_reads;
@@ -303,8 +352,7 @@ impl ScanProgress {
         }
     }
 
-    /// 中文：扫描结束时收尾进度条显示。
-    /// English: Finalizes the progress display when scanning is complete.
+    /// Finalizes the progress display when scanning is complete.
     fn finish(&self) {
         if let Self::Enabled(state) = self {
             state.bar.finish_and_clear();
@@ -313,8 +361,7 @@ impl ScanProgress {
 }
 
 impl ProgressState {
-    /// 中文：重新计算并更新进度条消息文本，例如 reads/s 和平均 read 长度。
-    /// English: Recomputes and updates the progress-bar message, such as reads per second and average read length.
+    /// Recomputes and updates the progress-bar message, such as reads per second and average read length.
     fn refresh_message(&mut self) {
         let elapsed = self.bar.elapsed().as_secs_f64();
         let reads_per_sec = if elapsed > 0.0 {
@@ -341,8 +388,7 @@ impl ProgressState {
     }
 }
 
-// 中文：把持续时间格式化成紧凑的 `HH:MM:SS` 或 `MM:SS`，用于进度消息展示。
-// English: Formats a duration into compact `HH:MM:SS` or `MM:SS` text for the progress message.
+// Formats a duration into compact `HH:MM:SS` or `MM:SS` text for the progress message.
 fn format_duration(duration: Duration) -> String {
     let total_seconds = duration.as_secs();
     let hours = total_seconds / 3600;
@@ -356,8 +402,7 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
-// 中文：把单条 record 的局部统计加到全局汇总表里。
-// English: Merges one record's local statistics into the global summary table.
+// Merges one record's local statistics into the global summary table.
 fn merge_record_result(record_result: &RecordResult, rows: &mut [CountRow]) {
     for motif_hit in &record_result.motif_hits {
         let row = &mut rows[motif_hit.motif_index];
@@ -370,8 +415,7 @@ fn merge_record_result(record_result: &RecordResult, rows: &mut [CountRow]) {
     }
 }
 
-// 中文：扫描单条 record 上的所有 motif，并按需要收集 read-level hit 明细。
-// English: Scans all motifs on one record and optionally collects read-level hit details.
+// Scans all motifs on one record and optionally collects read-level hit details.
 fn scan_record(record: &Record, motifs: &[CompiledMotif], emit_read_hits: bool) -> RecordResult {
     let mut motif_hits = Vec::with_capacity(motifs.len());
     let mut read_hits = Vec::new();
@@ -425,8 +469,7 @@ fn scan_record(record: &Record, motifs: &[CompiledMotif], emit_read_hits: bool) 
     }
 }
 
-// 中文：把模式命中的位置列表展开成真正的 read-hit 输出行。
-// English: Expands a list of hit positions into concrete read-hit output rows.
+// Expands a list of hit positions into concrete read-hit output rows.
 fn append_read_hits(
     sink: &mut Vec<ReadHitRow>,
     record: &Record,
@@ -447,14 +490,14 @@ fn append_read_hits(
     }
 }
 
-// 使用 Aho-Corasick 自动机扫描单条 record（多 pattern 路径）
+// Scan one record with the Aho-Corasick automaton (multi-pattern path).
 fn scan_record_aho(
     record: &Record,
     motifs: &[CompiledMotif],
     collect_positions: bool,
     aho: &AhoIndex,
 ) -> RecordResult {
-    // prepare per-motif accumulators
+    // Prepare per-motif accumulators.
     let mut motif_acc: Vec<MotifHitSummary> = motifs
         .iter()
         .enumerate()
@@ -498,8 +541,7 @@ fn scan_record_aho(
     }
 }
 
-// 中文：扫描一条具体 pattern，在 exact 模式下统计命中次数，并在需要时记录所有位置。
-// English: Scans one concrete pattern in exact mode, counting hits and recording positions when requested.
+// Scans one concrete pattern in exact mode, counting hits and recording positions when requested.
 fn scan_pattern(
     record: &Record,
     pattern: &crate::motif::Pattern,
@@ -529,14 +571,12 @@ fn scan_pattern(
 }
 
 #[cfg(test)]
-// 中文：测试辅助函数，直接返回所有 exact 命中位置，方便断言。
-// English: Test helper that materializes all exact-match positions for straightforward assertions.
+// Test helper that materializes all exact-match positions for straightforward assertions.
 fn exact_positions(sequence: &[u8], pattern: &[u8]) -> Vec<usize> {
     exact_positions_iter(sequence, pattern).collect()
 }
 
-// 中文：exact matching 的核心候选迭代器：先用 `memchr` 找首字节，再用次字节、末字节和整窗比较做快速剪枝。
-// English: Core exact-match iterator: it uses `memchr` for the first byte, then prunes with second-byte, last-byte, and full-window checks.
+// Core exact-match iterator: it uses `memchr` for the first byte, then prunes with second-byte, last-byte, and full-window checks.
 fn exact_positions_iter<'a>(
     sequence: &'a [u8],
     pattern: &'a [u8],
@@ -562,8 +602,7 @@ fn exact_positions_iter<'a>(
 }
 
 #[inline]
-// 中文：比较一个窗口和 motif 是否完全相等；在 x86/x86_64 上会优先使用 SIMD 快路径。
-// English: Compares one candidate window with the motif for exact equality, preferring SIMD fast paths on x86/x86_64.
+// Compares one candidate window with the motif for exact equality, preferring SIMD fast paths on x86/x86_64.
 fn exact_match_window(window: &[u8], pattern: &[u8]) -> bool {
     if window.len() != pattern.len() {
         return false;
@@ -588,8 +627,7 @@ fn exact_match_window(window: &[u8], pattern: &[u8]) -> bool {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
-// 中文：使用 AVX2 按 32 字节块比较两个切片；只在 CPU 支持且窗口足够长时调用。
-// English: Uses AVX2 to compare two slices in 32-byte chunks; called only when the CPU supports it and the window is long enough.
+// Uses AVX2 to compare two slices in 32-byte chunks; called only when the CPU supports it and the window is long enough.
 unsafe fn avx2_equal(window: &[u8], pattern: &[u8]) -> bool {
     let mut offset = 0;
     while offset + 32 <= window.len() {
@@ -606,8 +644,7 @@ unsafe fn avx2_equal(window: &[u8], pattern: &[u8]) -> bool {
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "sse2")]
-// 中文：使用 SSE2 按 16 字节块比较两个切片；作为 AVX2 不可用时的次优 SIMD 路径。
-// English: Uses SSE2 to compare two slices in 16-byte chunks as the fallback SIMD path when AVX2 is unavailable.
+// Uses SSE2 to compare two slices in 16-byte chunks as the fallback SIMD path when AVX2 is unavailable.
 unsafe fn sse2_equal(window: &[u8], pattern: &[u8]) -> bool {
     let mut offset = 0;
     while offset + 16 <= window.len() {
@@ -629,8 +666,7 @@ mod tests {
 
     use super::{exact_match_window, exact_positions, scan_record};
 
-    // 中文：构造一个最小 record，方便在单元测试里直接驱动扫描逻辑。
-    // English: Builds a minimal record object so unit tests can drive the scan logic directly.
+    // Builds a minimal record object so unit tests can drive the scan logic directly.
     fn demo_record(id: &str, seq: &str, qual: Option<Vec<u8>>) -> Record {
         Record {
             id: id.to_string(),
@@ -641,16 +677,14 @@ mod tests {
     }
 
     #[test]
-    // 中文：验证 exact 匹配会保留重叠命中，而不是只返回不重叠窗口。
-    // English: Verifies that exact matching keeps overlapping hits instead of only returning disjoint windows.
+    // Verifies that exact matching keeps overlapping hits instead of only returning disjoint windows.
     fn exact_matching_finds_overlapping_hits() {
         let hits = exact_positions(b"AAAAA", b"AAA");
         assert_eq!(hits, vec![0, 1, 2]);
     }
 
     #[test]
-    // 中文：验证 `reads_with_hit` 和 `total_hits` 的统计语义不同：一条 read 多次命中时只算一次 read，但会累计多个 hit。
-    // English: Verifies that `reads_with_hit` and `total_hits` have different semantics: one read can contribute once to the former and multiple times to the latter.
+    // Verifies that `reads_with_hit` and `total_hits` have different semantics: one read can contribute once to the former and multiple times to the latter.
     fn reads_with_hit_and_total_hits_are_distinct() {
         let motifs = compile_motifs(
             &[RawMotif {
@@ -670,8 +704,7 @@ mod tests {
     }
 
     #[test]
-    // 中文：验证开启反向互补后，scanner 能识别来自 reverse-complement 链的命中。
-    // English: Verifies that reverse-complement hits are detected correctly when revcomp scanning is enabled.
+    // Verifies that reverse-complement hits are detected correctly when revcomp scanning is enabled.
     fn reverse_complement_hits_are_detected() {
         let motifs = compile_motifs(
             &[RawMotif {
@@ -691,8 +724,7 @@ mod tests {
     }
 
     #[test]
-    // 中文：验证 exact 模式不会把包含 `N` 的 read 片段误当成普通精确匹配。
-    // English: Verifies that exact mode does not mistakenly treat read windows containing `N` as exact matches.
+    // Verifies that exact mode does not mistakenly treat read windows containing `N` as exact matches.
     fn exact_mode_does_not_match_ambiguous_motif_literals() {
         let motifs = compile_motifs(
             &[RawMotif {
@@ -711,8 +743,7 @@ mod tests {
     }
 
     #[test]
-    // 中文：验证 SIMD 快路径和标量回退路径在窗口比较上的结果一致。
-    // English: Verifies that the SIMD fast path and the scalar fallback agree on window-comparison results.
+    // Verifies that the SIMD fast path and the scalar fallback agree on window-comparison results.
     fn simd_window_match_falls_back_correctly() {
         let pattern = b"ATTATGAGAATAGTGTGATTATGAGAATAGTGTG";
         assert!(exact_match_window(pattern, pattern));
@@ -723,7 +754,7 @@ mod tests {
     }
 
     #[test]
-    // Integration-ish test: run run_count on test/ sample data and ensure outputs are produced
+    // Integration-ish test: run run_count on test sample data and ensure outputs are produced.
     fn run_count_writes_outputs() {
         use crate::cli::CountArgs;
         use flate2::write::GzEncoder;
@@ -735,7 +766,7 @@ mod tests {
         let out_count = tmp.path().join("count.csv");
         let out_hits = tmp.path().join("read_hits.csv");
 
-        // create a small FASTQ and gzip it
+        // Create a small FASTQ and gzip it.
         let fq_path = tmp.path().join("reads_sample.fastq.gz");
         let fq_contents = b"@r1\nATTATGAGAATAGTGTG\n+\nFFFFFFFFFFFFFFFFF\n@r2\nATGAA\n+\nFFFFF\n";
         {
@@ -745,7 +776,7 @@ mod tests {
             enc.finish().unwrap();
         }
 
-        // create a motif CSV
+        // Create a motif CSV.
         let motifs_path = tmp.path().join("motifs.csv");
         std::fs::write(
             &motifs_path,
@@ -765,10 +796,10 @@ mod tests {
             report_read_hits: Some(out_hits.clone()),
         };
 
-        // run
+        // Run the scanner.
         super::run_count(&args).expect("run_count failed");
 
-        // check files exist and contain expected header
+        // Check that the output files exist and contain the expected headers.
         let count_txt = std::fs::read_to_string(out_count).unwrap();
         assert!(count_txt.contains("motif,sequence,length"));
         let hits_txt = std::fs::read_to_string(out_hits).unwrap();

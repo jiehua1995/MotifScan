@@ -1,10 +1,8 @@
-//! 中文：命令行接口定义模块，负责把用户输入解析成结构化参数。
-//! English: Command-line interface module that parses user input into typed configuration.
+//! Command-line interface module that parses user input into typed configuration.
 
 use clap::{ArgAction, Args, Parser, Subcommand};
 
-/// 中文：程序顶层 CLI 入口，包含全局参数和子命令。
-/// English: Top-level CLI object containing global flags and subcommands.
+/// Top-level CLI object containing global flags and subcommands.
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "motifscan",
@@ -22,23 +20,38 @@ pub struct Cli {
     )]
     pub version_info: bool,
 
+    #[arg(long, global = true, help = "Enable info-level logs")]
+    pub verbose: bool,
+
+    #[arg(long, global = true, help = "Enable debug-level logs")]
+    pub debug: bool,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
 
 impl Cli {
-    /// 中文：返回当前运行应使用的线程数；如果用户还没进入子命令，就回退到 CPU 核心数。
-    /// English: Returns the worker-thread count for the current invocation, falling back to CPU count when no subcommand is selected.
+    /// Returns the worker-thread count for the current invocation, falling back to CPU count when no subcommand is selected.
     pub fn threads(&self) -> usize {
         match &self.command {
             Some(Command::Count(args)) => args.threads,
             None => num_cpus::get(),
         }
     }
+
+    /// Returns the default log level derived from the CLI flags.
+    pub fn log_level(&self) -> &'static str {
+        if self.debug {
+            "debug"
+        } else if self.verbose {
+            "info"
+        } else {
+            "warn"
+        }
+    }
 }
 
-/// 中文：生成版本和引用信息文本，供 `-v/--version` 直接打印。
-/// English: Builds the version and citation banner printed by `-v/--version`.
+/// Builds the version and citation banner printed by `-v/--version`.
 pub fn version_banner() -> String {
     format!(
         "motifscan {}\n\nCitation (BibTeX):\n@software{{motifscan,\n  author = {{jiehua1995}},\n  title = {{MotifScan}},\n  url = {{https://github.com/jiehua1995/MotifScan}},\n  version = {{{}}}\n}}",
@@ -47,16 +60,14 @@ pub fn version_banner() -> String {
     )
 }
 
-/// 中文：当前支持的子命令集合；现在只有 `count`。
-/// English: Set of supported subcommands; currently only `count` is implemented.
+/// Set of supported subcommands; currently only `count` is implemented.
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
     #[command(about = "Count exact motif hits in reads", long_about = None)]
     Count(CountArgs),
 }
 
-/// 中文：`count` 子命令的全部参数，描述输入、motif、线程与输出目标。
-/// English: Full argument set for the `count` subcommand, including input, motif, threading, and output targets.
+/// Full argument set for the `count` subcommand, including input, motif, threading, and output targets.
 #[derive(Debug, Clone, Args)]
 #[command(about = "Count exact motif hits in reads", long_about = None)]
 pub struct CountArgs {
@@ -93,8 +104,7 @@ pub struct CountArgs {
 }
 
 impl CountArgs {
-    /// 中文：检查参数组合是否合法，例如必须提供 motif，线程数也不能为 0。
-    /// English: Validates argument combinations, ensuring a motif source exists and thread count is non-zero.
+    /// Validates argument combinations, ensuring a motif source exists and thread count is non-zero.
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.motif.is_none() && self.motifs.is_none() {
             anyhow::bail!("one of --motif or --motifs is required")

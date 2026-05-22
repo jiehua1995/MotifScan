@@ -1,96 +1,130 @@
-# MotifScan — Agent Usage Guide (for AI tools)
+# MotifScan Agent Guide
 
-This document is intended for automated agents and tools that need to understand how to use MotifScan programmatically or from the command line.
+This document is for automated agents and tooling that need to run MotifScan from the command line.
 
-Purpose
+## Purpose
 
-MotifScan is a streaming, low-memory Rust CLI that counts exact motif occurrences in FASTA/FASTQ reads. It supports multiple motifs (CSV table), optional reverse-complement scanning, and can emit per-read hit CSVs.
+MotifScan is a streaming, low-memory Rust CLI that counts exact motif occurrences in FASTA or FASTQ reads. It supports:
 
-Key behaviors
+- Single motifs provided inline with `--motif`
+- Multiple motifs loaded from a two-column CSV file with `--motifs`
+- Optional reverse-complement scanning with `--revcomp`
+- Optional read-level hit output with `--report-read-hits`
+- Optional progress display with `--progress`
+- Info/debug logging with `--verbose` and `--debug`
 
-- Input: FASTA, FASTQ, FASTA.GZ, FASTQ.GZ. FASTQ expected in standard 4-line format.
-- Matching: exact base matches only (`A`, `C`, `G`, `T`, `U`). Overlapping hits are counted. Reverse complement counts are optional via `--revcomp`.
-- Output summary CSV columns: `motif,sequence,length,reads_with_hit,total_hits,forward_hits,revcomp_hits`.
-- Read-hit CSV columns: `read_id,motif,strand,position,matched_sequence`.
-- Performance: uses SIMD window comparisons and Aho–Corasick automaton for large motif sets. Streams read hits to a writer thread to keep memory usage low.
+## Build
 
-Primary CLI usage
+- Required dependency: Rust toolchain
+- Local build command: `cargo build --release`
+- Binary path: `target/release/motifscan`
 
-- Count command (main workflow):
+## Input Formats
+
+- FASTA
+- FASTQ
+- Gzipped FASTA and FASTQ files with `.gz` extension
+- FASTQ is expected to use the standard four-line layout
+
+## Matching Rules
+
+- Exact base matching only
+- Supported motif bases: `A`, `C`, `G`, `T`, `U`
+- Overlapping hits are counted
+- Reverse-complement hits are counted separately when enabled
+- Palindromic motifs are not double-counted in reverse-complement mode
+
+## CLI Overview
+
+Main workflow:
 
 ```bash
 motifscan count -i <reads> --motifs <motifs.csv> -o <summary.csv>
 ```
 
-- Single motif from CLI:
+Single motif:
 
 ```bash
 motifscan count -i reads.fastq --motif ATTATGAGAATAGTGTG --motif-name motif1 -o count.csv
 ```
 
-- Emit read-level hits:
+Read-level hits:
 
 ```bash
 motifscan count -i reads.fastq --motifs motifs.csv --report-read-hits read_hits.csv -o count.csv
 ```
 
-Where
+Useful flags:
 
-- `--motifs <FILE>`: CSV with two columns `name,sequence` (comma-separated, optional header).
-- `--motif <SEQUENCE>` and `--motif-name <NAME>`: specify a single motif inline.
-- `--revcomp`: include reverse complement matches.
-- `-t/--threads <INT>`: number of worker threads.
-- `--progress`: show a progress bar on stderr.
+- `-i`, `--input <FILE>`: reads file
+- `--motif <SEQUENCE>`: one motif provided inline
+- `--motif-name <NAME>`: name used for `--motif`, default `motif`
+- `--motifs <FILE>`: two-column CSV motif table
+- `--revcomp`: scan reverse complements too
+- `-t`, `--threads <INT>`: worker threads
+- `--progress`: show a progress bar on stderr
+- `--verbose`: enable info-level logs
+- `--debug`: enable debug-level logs
+- `-o`, `--output <FILE>`: summary CSV output
+- `--report-read-hits <FILE>`: optional read-level hit CSV output
 
-Interactions for agents
+## Output Formats
 
-- Validate inputs before running: ensure motifs file uses only canonical bases; if the agent supplies IUPAC codes, the CLI will reject unless `--iupac` is explicitly supported in future versions.
-- Prefer `--motifs` CSV when scanning many motifs; the scanner builds an Aho–Corasick automaton if motif count is large to speed matching.
-- To collect per-read hits, set `--report-read-hits` to a writable path; the CLI streams hits so the file may be written incrementally.
+Summary CSV columns:
 
-Example automation steps for an agent
-
-1. Prepare `motifs.csv` with `name,sequence` rows.
-2. Ensure reads file exists (compressed allowed).
-3. Run MotifScan with desired options.
-4. Monitor exit code: zero indicates success; non-zero indicates error.
-5. Read `summary.csv` after completion; if `--report-read-hits` was used, the hits file may be partially available during runtime but fully written on success.
-
-Return codes and error handling
-
-- Exit 0: success.
-- Exit non-zero: failure. The CLI writes human-readable errors to stderr. Agents should capture stderr and parse messages for actionable info (e.g., invalid motif file, I/O errors).
-
-Performance and constraints for agents
-
-- Memory: MotifScan is designed to stream data and avoid keeping read-hit rows in memory. Agents can run it on large datasets but should size `--threads` according to CPU availability.
-- Cross-platform: Binaries are available as releases; for automation across OSes, download platform-specific release artifacts.
-
-Where to find artifacts and docs
-
-- Releases: check the GitHub Releases page for prebuilt binaries and `.sha256` checksum files.
-- Local build: `cargo build --release` produces `target/release/motifscan`.
-- Docs: `README.md`, `README_CN.md`, and `doc/release.md` in the repository.
-
-Sample agent pseudo-workflow (shell)
-
-```bash
-# prepare
-# run motifscan and capture exit and stderr
-motifscan count -i reads.fastq --motifs motifs.csv --report-read-hits hits.csv -o summary.csv 2>run.err
-RC=$?
-if [ $RC -ne 0 ]; then
-  cat run.err
-  exit $RC
-fi
-# on success, read summary.csv
-cat summary.csv
+```text
+motif,sequence,length,reads_with_hit,total_hits,forward_hits,revcomp_hits
 ```
 
-Tips for implementers
+Read-hit CSV columns:
 
-- If running inside an orchestrated environment, stream the `--report-read-hits` file to downstream consumers as it is produced.
-- When scanning many motifs, expect the Aho–Corasick path to be used; this is more CPU-friendly for large motif sets.
-- For deterministic reproducible releases, verify downloaded artifacts with SHA256 before executing.
+```text
+read_id,motif,strand,position,matched_sequence
+```
 
-This document is intended to give automated agents enough context to run MotifScan, check for expected outputs, and handle errors programmatically.
+## Error Handling
+
+- Exit code `0` indicates success.
+- Non-zero exit codes indicate failure.
+- Errors are printed to stderr.
+- If the read-hit writer fails, the process exits non-zero instead of silently succeeding.
+
+## Performance Notes
+
+- The scanner streams input and does not buffer the entire dataset in memory.
+- For larger motif sets, it enables an Aho-Corasick path automatically.
+- Read-level hits are written through a dedicated writer thread.
+
+## Benchmark Script
+
+The repository includes [`doc/benchmark.sh`](./benchmark.sh), which:
+
+- Generates random motifs and synthetic FASTA/FASTQ data under `benchmark_work/`
+- Builds the release binary
+- Packages and unpacks the binary archive
+- Runs MotifScan against the generated data
+- Verifies output against expected CSV files
+- Measures wall-clock time for each phase
+
+Environment variables supported by the script:
+
+- `BENCH_WORKDIR`: benchmark work directory, must stay under the repository root
+- `BENCH_READS`: number of synthetic reads
+- `BENCH_MOTIFS`: number of synthetic motifs
+- `BENCH_READ_LEN`: read length
+- `BENCH_SEED`: random seed
+- `BENCH_INSERT_POS`: insertion position for synthetic motif hits
+
+Example:
+
+```bash
+BENCH_READS=20000 BENCH_MOTIFS=128 BENCH_READ_LEN=160 doc/benchmark.sh
+```
+
+## Notes for Agents
+
+- Use `--motifs` for larger scans and `--motif` for single-motif runs.
+- Use `--report-read-hits` only when read-level details are needed; it increases output size.
+- Prefer `--verbose` for human-readable run summaries, `--debug` for per-chunk diagnostics.
+- If you need to compare output, use exact CSV header and column ordering shown above.
+- Do not rely on `test/` or any README fixture references when automating, because those files are not part of the uploaded runtime context.

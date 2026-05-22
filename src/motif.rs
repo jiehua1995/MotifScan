@@ -1,5 +1,4 @@
-//! 中文：motif 解析与预编译模块，负责读取 CSV、校验序列并准备正向/反向互补模式。
-//! English: Motif parsing and compilation module that loads CSV input, validates sequences, and prepares forward/reverse-complement patterns.
+//! Motif parsing and compilation module that loads CSV input, validates sequences, and prepares forward/reverse-complement patterns.
 
 use std::fs::File;
 use std::io::BufReader;
@@ -8,31 +7,27 @@ use std::path::Path;
 use anyhow::{anyhow, bail, Context, Result};
 use csv::{ReaderBuilder, StringRecord, Trim};
 
-/// 中文：命中链方向枚举，用于区分正向命中还是反向互补命中。
-/// English: Strand-direction enum used to distinguish forward hits from reverse-complement hits.
+/// Strand-direction enum used to distinguish forward hits from reverse-complement hits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Strand {
     Forward,
     Reverse,
 }
 
-/// 中文：从命令行或 CSV 读取后的原始 motif，尚未做字节级预处理。
-/// English: Raw motif loaded from CLI or CSV before byte-level normalization and compilation.
+/// Raw motif loaded from CLI or CSV before byte-level normalization and compilation.
 #[derive(Debug, Clone)]
 pub struct RawMotif {
     pub name: String,
     pub sequence: String,
 }
 
-/// 中文：单条可匹配模式，目前只保存标准化后的字节序列。
-/// English: One compiled match pattern; at the moment it stores only the normalized byte sequence.
+/// One compiled match pattern; at the moment it stores only the normalized byte sequence.
 #[derive(Debug, Clone)]
 pub struct Pattern {
     pub sequence: Vec<u8>,
 }
 
-/// 中文：完整编译后的 motif，包含名称、原始展示序列，以及正向/反向互补模式。
-/// English: Fully compiled motif containing its name, display sequence, and forward/reverse-complement patterns.
+/// Fully compiled motif containing its name, display sequence, and forward/reverse-complement patterns.
 #[derive(Debug, Clone)]
 pub struct CompiledMotif {
     pub name: String,
@@ -43,8 +38,7 @@ pub struct CompiledMotif {
 }
 
 impl CompiledMotif {
-    /// 中文：返回 motif 长度，实际长度来自正向模式的字节数。
-    /// English: Returns the motif length, derived from the forward pattern byte count.
+    /// Returns the motif length, derived from the forward pattern byte count.
     pub fn len(&self) -> usize {
         self.forward.sequence.len()
     }
@@ -56,8 +50,7 @@ impl CompiledMotif {
     }
 }
 
-/// 中文：把命令行提供的单个 motif 包装成统一的 `RawMotif` 列表接口。
-/// English: Wraps a single CLI-provided motif into the common `RawMotif` list representation.
+/// Wraps a single CLI-provided motif into the common `RawMotif` list representation.
 pub fn load_single_motif(name: &str, sequence: &str) -> Result<Vec<RawMotif>> {
     let sequence = sequence.trim();
     if sequence.is_empty() {
@@ -69,8 +62,7 @@ pub fn load_single_motif(name: &str, sequence: &str) -> Result<Vec<RawMotif>> {
     }])
 }
 
-/// 中文：从两列 CSV 文件加载 motif 列表，并跳过可选表头与注释行。
-/// English: Loads motifs from a two-column CSV file, skipping the optional header and comment lines.
+/// Loads motifs from a two-column CSV file, skipping the optional header and comment lines.
 pub fn load_motif_file(path: &Path) -> Result<Vec<RawMotif>> {
     let reader = BufReader::new(
         File::open(path)
@@ -138,8 +130,7 @@ pub fn load_motif_file(path: &Path) -> Result<Vec<RawMotif>> {
     Ok(motifs)
 }
 
-/// 中文：批量编译所有原始 motif，把它们转成扫描器可以直接使用的结构。
-/// English: Compiles a batch of raw motifs into the structures consumed directly by the scanner.
+/// Compiles a batch of raw motifs into the structures consumed directly by the scanner.
 pub fn compile_motifs(
     raw_motifs: &[RawMotif],
     include_revcomp: bool,
@@ -150,8 +141,7 @@ pub fn compile_motifs(
         .collect()
 }
 
-/// 中文：编译单个 motif，完成标准化、合法性检查和反向互补预计算。
-/// English: Compiles a single motif by normalizing it, validating allowed bases, and precomputing the reverse complement when requested.
+/// Compiles a single motif by normalizing it, validating allowed bases, and precomputing the reverse complement when requested.
 pub fn compile_motif(raw: &RawMotif, include_revcomp: bool) -> Result<CompiledMotif> {
     let sequence = normalize_sequence(&raw.sequence);
     if sequence.is_empty() {
@@ -184,8 +174,7 @@ pub fn compile_motif(raw: &RawMotif, include_revcomp: bool) -> Result<CompiledMo
     })
 }
 
-/// 中文：把序列裁掉首尾空白并统一转成大写，便于后续按字节比较。
-/// English: Trims surrounding whitespace and converts a sequence to uppercase for byte-wise matching.
+/// Trims surrounding whitespace and converts a sequence to uppercase for byte-wise matching.
 pub fn normalize_sequence(sequence: &str) -> Vec<u8> {
     sequence
         .trim()
@@ -195,8 +184,7 @@ pub fn normalize_sequence(sequence: &str) -> Vec<u8> {
         .collect()
 }
 
-// 中文：检查 motif 是否只包含当前 exact 模式允许的碱基字符。
-// English: Verifies that a motif contains only the bases accepted by the current exact-match implementation.
+// Verifies that a motif contains only the bases accepted by the current exact-match implementation.
 fn validate_motif_sequence(name: &str, sequence: &[u8]) -> Result<()> {
     for base in sequence {
         let upper = base.to_ascii_uppercase();
@@ -214,8 +202,7 @@ fn validate_motif_sequence(name: &str, sequence: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// 中文：计算给定序列的反向互补序列。
-/// English: Computes the reverse-complement sequence for the provided bases.
+/// Computes the reverse-complement sequence for the provided bases.
 pub fn reverse_complement(sequence: &[u8]) -> Result<Vec<u8>> {
     sequence
         .iter()
@@ -224,8 +211,7 @@ pub fn reverse_complement(sequence: &[u8]) -> Result<Vec<u8>> {
         .collect()
 }
 
-// 中文：返回单个碱基的互补碱基，用于构建反向互补 motif。
-// English: Returns the complementary base for a single nucleotide when building reverse-complement motifs.
+// Returns the complementary base for a single nucleotide when building reverse-complement motifs.
 fn complement(base: u8) -> Result<u8> {
     match base.to_ascii_uppercase() {
         b'A' => Ok(b'T'),
@@ -236,8 +222,7 @@ fn complement(base: u8) -> Result<u8> {
     }
 }
 
-// 中文：判断一条 CSV 记录是否是 `name,sequence` 这样的表头。
-// English: Detects whether a CSV record is the optional `name,sequence` header row.
+// Detects whether a CSV record is the optional `name,sequence` header row.
 fn is_header(record: &StringRecord) -> bool {
     matches!(
         (record.get(0), record.get(1), record.len()),
@@ -256,16 +241,14 @@ mod tests {
     use tempfile::NamedTempFile;
 
     #[test]
-    // 中文：验证标准碱基的反向互补实现是否正确。
-    // English: Verifies that reverse-complement generation works correctly for canonical bases.
+    // Verifies that reverse-complement generation works correctly for canonical bases.
     fn reverse_complement_handles_canonical_bases() {
         let rc = reverse_complement(b"ATGCT").unwrap();
         assert_eq!(String::from_utf8(rc).unwrap(), "AGCAT");
     }
 
     #[test]
-    // 中文：验证回文 motif 不会重复生成反向互补模式。
-    // English: Verifies that palindromic motifs do not generate a redundant reverse-complement pattern.
+    // Verifies that palindromic motifs do not generate a redundant reverse-complement pattern.
     fn compiles_palindromic_reverse_once() {
         let motif = RawMotif {
             name: "pal".to_string(),
@@ -277,8 +260,7 @@ mod tests {
     }
 
     #[test]
-    // 中文：验证包含简并碱基的 motif 会在 exact-only 模式下被拒绝。
-    // English: Verifies that motifs containing ambiguous bases are rejected in exact-only mode.
+    // Verifies that motifs containing ambiguous bases are rejected in exact-only mode.
     fn rejects_non_exact_motif_characters() {
         let motif = RawMotif {
             name: "iupac".to_string(),
@@ -291,8 +273,7 @@ mod tests {
     }
 
     #[test]
-    // 中文：验证 CSV 表头识别逻辑只匹配 `name,sequence`，不会误判普通数据行。
-    // English: Verifies that header detection matches only `name,sequence` and does not misclassify ordinary data rows.
+    // Verifies that header detection matches only `name,sequence` and does not misclassify ordinary data rows.
     fn detects_optional_csv_header() {
         let header = StringRecord::from(vec!["name", "sequence"]);
         let row = StringRecord::from(vec!["motif1", "ACTG"]);
@@ -301,8 +282,7 @@ mod tests {
     }
 
     #[test]
-    // 中文：验证 motif CSV 文件加载路径能正确跳过表头并读取数据行。
-    // English: Verifies that motif CSV loading skips the header and reads the data rows correctly.
+    // Verifies that motif CSV loading skips the header and reads the data rows correctly.
     fn loads_comma_separated_motif_file() {
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, "name,sequence").unwrap();

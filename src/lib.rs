@@ -1,5 +1,4 @@
-//! 中文：库入口模块，负责串联 CLI、线程池初始化和扫描执行流程。
-//! English: Library entry module that wires together CLI parsing, thread-pool setup, and scan execution.
+//! Library entry module that wires together CLI parsing, thread-pool setup, and scan execution.
 
 pub mod cli;
 pub mod io;
@@ -10,18 +9,19 @@ pub mod scanner;
 use anyhow::Result;
 use clap::CommandFactory;
 use clap::Parser;
+use tracing_subscriber::EnvFilter;
 
-/// 中文：运行程序主流程。
-/// English: Runs the main application flow.
+/// Runs the main application flow.
 ///
-/// 中文：这个函数先解析命令行参数，再处理版本输出、帮助文本、线程池初始化，最后把控制权交给具体子命令。
-/// English: This function parses CLI arguments, handles version/help output, initializes the Rayon thread pool, and finally dispatches to the selected subcommand.
+/// This function parses CLI arguments, handles version/help output, initializes the Rayon thread pool, and finally dispatches to the selected subcommand.
 pub fn run() -> Result<()> {
     let cli = cli::Cli::parse();
     if cli.version_info {
         println!("{}", cli::version_banner());
         return Ok(());
     }
+
+    init_logging(&cli);
 
     let thread_count = cli.threads();
 
@@ -40,4 +40,19 @@ pub fn run() -> Result<()> {
     match command {
         cli::Command::Count(args) => scanner::run_count(&args),
     }
+}
+
+fn init_logging(cli: &cli::Cli) {
+    let filter = if cli.debug {
+        EnvFilter::new("debug")
+    } else if cli.verbose {
+        EnvFilter::new("info")
+    } else {
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"))
+    };
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .try_init();
 }
