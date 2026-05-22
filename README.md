@@ -14,7 +14,7 @@ MotifScan is a streaming, low-memory, multi-threaded Rust CLI for exact motif sc
 
 ## Build Dependency
 
-- Rust toolchain for building from source
+- [Rust](https://rust-lang.org/tools/install/) toolchain for building from source
 
 ## Features
 
@@ -131,12 +131,14 @@ read_id,motif,strand,position,matched_sequence
 
 ## Citation
 
+Just mention this repository or cite like:
+
 ```bibtex
 @software{motifscan,
   author = {jiehua1995},
   title = {MotifScan},
   url = {https://github.com/jiehua1995/MotifScan},
-  version = {0.1.5}
+  version = {0.1.6}
 }
 ```
 
