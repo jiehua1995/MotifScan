@@ -8,6 +8,8 @@ use clap::{ArgAction, Args, Parser, Subcommand};
     name = "motifscan",
     version,
     disable_version_flag = true,
+    disable_help_flag = true,
+    disable_help_subcommand = true,
     about = "Streaming motif scanner for FASTA/FASTQ reads"
 )]
 pub struct Cli {
@@ -16,15 +18,12 @@ pub struct Cli {
         long = "version",
         action = ArgAction::SetTrue,
         global = true,
-        help = "Print version and citation information"
+        help = "Print version and citation information",
+        help_heading = "Info"
     )]
     pub version_info: bool,
-
-    #[arg(long, global = true, help = "Enable info-level logs")]
-    pub verbose: bool,
-
-    #[arg(long, global = true, help = "Enable debug-level logs")]
-    pub debug: bool,
+    #[arg(short = 'h', long = "help", help = "Print help", action = ArgAction::SetTrue, help_heading = "Info")]
+    pub help: bool,
 
     #[command(subcommand)]
     pub command: Option<Command>,
@@ -41,13 +40,7 @@ impl Cli {
 
     /// Returns the default log level derived from the CLI flags.
     pub fn log_level(&self) -> &'static str {
-        if self.debug {
-            "debug"
-        } else if self.verbose {
-            "info"
-        } else {
-            "warn"
-        }
+        "warn"
     }
 }
 
@@ -74,44 +67,82 @@ pub struct CountArgs {
     #[arg(
         short = 'i',
         long,
-        help = "Input read file in FASTA, FASTQ, FASTA.GZ, or FASTQ.GZ format"
+        help = "Input read file in FASTA, FASTQ, FASTA.GZ, or FASTQ.GZ format",
+        help_heading = "File"
     )]
-    pub input: std::path::PathBuf,
+    pub input: Option<std::path::PathBuf>,
     #[arg(
         long,
         conflicts_with = "motifs",
-        help = "Single motif sequence provided on the command line"
+        help = "Single motif sequence provided on the command line",
+        help_heading = "Motif"
     )]
     pub motif: Option<String>,
-    #[arg(long, default_value = "motif", help = "Output name used with --motif")]
+    #[arg(
+        long,
+        default_value = "motif",
+        help = "Output name used with --motif",
+        help_heading = "Motif",
+        requires = "motif"
+    )]
     pub motif_name: String,
     #[arg(
         long,
         conflicts_with = "motif",
-        help = "Two-column CSV file containing motif name and sequence"
+        help = "Two-column CSV file containing motif name and sequence",
+        help_heading = "Motif"
     )]
     pub motifs: Option<std::path::PathBuf>,
-    #[arg(long, help = "Also scan the reverse complement of each motif")]
+    #[arg(
+        long,
+        help = "Also scan the reverse complement of each motif",
+        help_heading = "Motif"
+    )]
     pub revcomp: bool,
-    #[arg(short = 't', long, default_value_t = num_cpus::get(), help = "Number of worker threads to use")]
+    #[arg(short = 't', long, default_value_t = num_cpus::get(), help = "Number of worker threads to use", help_heading = "Performance")]
     pub threads: usize,
-    #[arg(long, help = "Show a live progress display on stderr")]
+    #[arg(
+        long,
+        help = "Show a live progress display on stderr",
+        help_heading = "Behavior"
+    )]
     pub progress: bool,
-    #[arg(short = 'o', long, help = "Output CSV file for motif summary counts")]
-    pub output: std::path::PathBuf,
-    #[arg(long, help = "Optional CSV file for read-level hit details")]
+    #[arg(short = 'h', long = "help", help = "Print help", action = ArgAction::SetTrue, help_heading = "Info")]
+    pub help: bool,
+    #[arg(
+        short = 'o',
+        long,
+        help = "Output CSV file for motif summary counts",
+        help_heading = "File"
+    )]
+    pub output: Option<std::path::PathBuf>,
+    #[arg(
+        long,
+        help = "Optional CSV file for read-level hit details",
+        help_heading = "Behavior"
+    )]
     pub report_read_hits: Option<std::path::PathBuf>,
 }
 
 impl CountArgs {
     /// Validates argument combinations, ensuring a motif source exists and thread count is non-zero.
     pub fn validate(&self) -> anyhow::Result<()> {
+        if self.help {
+            return Ok(());
+        }
         if self.motif.is_none() && self.motifs.is_none() {
             anyhow::bail!("one of --motif or --motifs is required")
         }
         if self.threads == 0 {
             anyhow::bail!("--threads must be greater than 0")
         }
+        if self.input.is_none() {
+            anyhow::bail!("--input is required")
+        }
+        if self.output.is_none() {
+            anyhow::bail!("--output is required")
+        }
+
         Ok(())
     }
 }

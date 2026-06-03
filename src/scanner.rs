@@ -68,8 +68,9 @@ struct PatternScanResult {
 /// This function validates arguments, loads motifs, opens the input stream, drives the scan loop, and writes the final aggregated CSV output.
 pub fn run_count(args: &CountArgs) -> Result<()> {
     args.validate()?;
+    let input = args.input.as_ref().unwrap();
     info!(
-        input = %args.input.display(),
+        input = %input.display(),
         has_single_motif = args.motif.is_some(),
         has_motif_file = args.motifs.is_some(),
         revcomp = args.revcomp,
@@ -91,12 +92,11 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
         "compiled motifs"
     );
 
-    let mut reader = open_record_reader(&args.input)?;
+    let mut reader = open_record_reader(input)?;
     let mut rows = initialize_rows(&motifs);
     let (hit_sender, writer_handle, writer_status) =
         maybe_spawn_hit_writer(args.report_read_hits.as_deref())?;
-    let mut progress =
-        ScanProgress::new(&reader, args.progress, "count", &args.input, motifs.len())?;
+    let mut progress = ScanProgress::new(&reader, args.progress, "count", input, motifs.len())?;
 
     let aho_index = if motifs.len() >= 8 {
         let mut patterns_owned: Vec<String> = Vec::new();
@@ -151,7 +151,8 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
         info!("read-hit report writer finished successfully");
     }
     progress.finish();
-    write_count_summary(&args.output, &rows)?;
+    let output = args.output.as_ref().unwrap();
+    write_count_summary(output, &rows)?;
 
     let total_hits: u64 = rows.iter().map(|row| row.total_hits).sum();
     let read_hits: u64 = rows.iter().map(|row| row.reads_with_hit).sum();
@@ -162,7 +163,7 @@ pub fn run_count(args: &CountArgs) -> Result<()> {
         motifs = rows.len(),
         reads_with_hit = read_hits,
         total_hits = total_hits,
-        output = %args.output.display(),
+        output = %output.display(),
         "finished motif count run"
     );
 
@@ -785,14 +786,15 @@ mod tests {
         .unwrap();
 
         let args = CountArgs {
-            input: fq_path,
+            input: Some(fq_path),
             motif: None,
             motif_name: "motif".to_string(),
             motifs: Some(motifs_path),
             revcomp: true,
             threads: 1,
             progress: false,
-            output: out_count.clone(),
+            help: false,
+            output: Some(out_count.clone()),
             report_read_hits: Some(out_hits.clone()),
         };
 

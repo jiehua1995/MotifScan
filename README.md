@@ -16,15 +16,6 @@ MotifScan is a streaming, low-memory, multi-threaded Rust CLI for exact motif sc
 
 - [Rust](https://rust-lang.org/tools/install/) toolchain for building from source
 
-## Features
-
-- Exact matching only
-- Optional reverse-complement scanning
-- Single-motif or CSV motif input
-- Optional read-level hit output
-- FASTA, FASTQ, FASTA.GZ, and FASTQ.GZ support
-- Aho-Corasick acceleration when scanning many motifs
-
 ## Installation
 
 ```bash
@@ -37,7 +28,7 @@ Binary path:
 ./target/release/motifscan
 ```
 
-Version and citation:
+Version information:
 
 ```bash
 motifscan -v
@@ -76,19 +67,21 @@ motifscan count \
   -o count.csv
 ```
 
-## Main Options
+Logging: control logging via the `RUST_LOG` environment variable or the environment filter; no per-command `--debug` flag is available.
 
-- `-i`, `--input <FILE>`: input reads file
-- `--motif <SEQUENCE>`: one motif provided on the command line
-- `--motif-name <NAME>`: name used for `--motif`, default `motif`
-- `--motifs <FILE>`: two-column CSV motif table
-- `--revcomp`: also scan reverse complements
-- `-t`, `--threads <INT>`: worker threads
-- `--progress`: show progress on stderr
-- `--verbose`: enable info-level logs
-- `--debug`: enable debug-level logs
-- `-o`, `--output <FILE>`: summary CSV output
-- `--report-read-hits <FILE>`: optional read-level hit CSV output
+## motifscan Count Options
+
+| Option | Default | Description | Notes |
+|---|---:|---|---|
+| `-i, --input` | required | Input reads file (FASTA/FASTQ or gz) | Use single `-i` followed by file |
+| `-o, --output` | required | Output CSV path | Summary CSV; first column is motif |
+| `-t, --threads` | auto | Number of worker threads | `0` means auto-select |
+| `--progress` | false | Show progress bar on stderr | Useful for long runs |
+| `--motif` | - | Single motif sequence | Mutually exclusive with `--motifs` |
+| `--motifs` | - | Two-column CSV of motifs | `name,sequence` |
+| `--motif-name` | `motif` | Name used with `--motif` | Only valid when `--motif` is provided |
+| `--revcomp` | false | Also scan reverse complements | When set, reverse strand matches counted separately |
+
 
 ## Motif CSV Format
 
@@ -98,13 +91,6 @@ motif1,ATTATGAGAATAGTGTG
 motif2,TTCATTCATGGTGGCAGTAAAATGTTTATTGTG
 motif3,ATGAA
 ```
-
-Rules:
-
-- Comma-separated only
-- Optional header row
-- Exactly two columns: `name,sequence`
-- Motifs must use exact bases only: `A`, `C`, `G`, `T`, `U`
 
 ## Output CSV Columns
 

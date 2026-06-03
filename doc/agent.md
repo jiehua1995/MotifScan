@@ -10,8 +10,8 @@ MotifScan is a streaming, low-memory Rust CLI that counts exact motif occurrence
 - Multiple motifs loaded from a two-column CSV file with `--motifs`
 - Optional reverse-complement scanning with `--revcomp`
 - Optional read-level hit output with `--report-read-hits`
-- Optional progress display with `--progress`
-- Info/debug logging with `--verbose` and `--debug`
+ - Optional progress display with `--progress`
+ - Logging: control logging via the `RUST_LOG` environment variable or the environment filter; no per-command `--debug` flag is available; otherwise logging defaults to `warn`
 
 ## Build
 
@@ -54,19 +54,19 @@ Read-level hits:
 motifscan count -i reads.fastq --motifs motifs.csv --report-read-hits read_hits.csv -o count.csv
 ```
 
-Useful flags:
+## Count Options (profile)
 
-- `-i`, `--input <FILE>`: reads file
-- `--motif <SEQUENCE>`: one motif provided inline
-- `--motif-name <NAME>`: name used for `--motif`, default `motif`
-- `--motifs <FILE>`: two-column CSV motif table
-- `--revcomp`: scan reverse complements too
-- `-t`, `--threads <INT>`: worker threads
-- `--progress`: show a progress bar on stderr
-- `--verbose`: enable info-level logs
-- `--debug`: enable debug-level logs
-- `-o`, `--output <FILE>`: summary CSV output
-- `--report-read-hits <FILE>`: optional read-level hit CSV output
+| Option | Default | Description | Notes |
+|---|---:|---|---|
+| `-i, --input` | required | Input reads file (FASTA/FASTQ or gz) | Use single `-i` followed by file |
+| `-o, --output` | required | Output CSV path | Summary CSV; first column is motif |
+| `-t, --threads` | auto | Number of worker threads | `0` means auto-select |
+| `--progress` | false | Show progress bar on stderr | Useful for long runs |
+| `--motif` | - | Single motif sequence | Mutually exclusive with `--motifs` |
+| `--motifs` | - | Two-column CSV of motifs | `name,sequence` |
+| `--motif-name` | `motif` | Name used with `--motif` | Only valid when `--motif` is provided |
+| `--revcomp` | false | Also scan reverse complements | When set, reverse strand matches counted separately |
+
 
 ## Output Formats
 
@@ -125,6 +125,6 @@ BENCH_READS=20000 BENCH_MOTIFS=128 BENCH_READ_LEN=160 doc/benchmark.sh
 
 - Use `--motifs` for larger scans and `--motif` for single-motif runs.
 - Use `--report-read-hits` only when read-level details are needed; it increases output size.
-- Prefer `--verbose` for human-readable run summaries, `--debug` for per-chunk diagnostics.
+ - Per-command `--debug` flags have been removed; use `RUST_LOG`/env to enable debug logging.
 - If you need to compare output, use exact CSV header and column ordering shown above.
 - Do not rely on `test/` or any README fixture references when automating, because those files are not part of the uploaded runtime context.
