@@ -2,7 +2,7 @@
 
 <div style="display:flex;align-items:center;gap:18px;">
   <div style="flex:0 0 auto;">
-    <img src="doc/logo.png" alt="MotifScan logo" width="120" style="border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,0.12);">
+    <img src="doc/logo.svg" alt="MotifScan logo" width="120" style="border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,0.12);">
   </div>
   <div style="flex:1 1 auto;">
     <h2 style="margin:0 0 6px 0; font-weight:700;">Streaming, low-memory motif scanning CLI in Rust</h2>
