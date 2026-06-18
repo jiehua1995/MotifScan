@@ -22,6 +22,16 @@ categories = [
     "science" 
     ]
 
+
+exclude = [
+    ".github/**",
+    ".gitignore",
+    "doc/agent.md",
+    "doc/benchmark.sh",
+    "doc/logo.af",
+    "doc/logo.png",
+]
+
 [lib]
 name = "motifscan"
 path = "src/lib.rs"
