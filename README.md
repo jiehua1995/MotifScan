@@ -124,7 +124,7 @@ Just mention this repository or cite like:
   author = {jiehua1995},
   title = {MotifScan},
   url = {https://github.com/jiehua1995/MotifScan},
-  version = {0.1.6}
+  version = {0.1.7}
 }
 ```
 

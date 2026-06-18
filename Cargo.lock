@@ -3,24 +3,6 @@
 version = 4
 
 [[package]]
-name = "MotifScan"
-version = "0.1.7"
-dependencies = [
- "aho-corasick 0.7.20",
- "anyhow",
- "clap",
- "csv",
- "flate2",
- "indicatif",
- "memchr",
- "num_cpus",
- "rayon",
- "tempfile",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -454,6 +436,24 @@ checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "motifscan"
+version = "0.1.7"
+dependencies = [
+ "aho-corasick 0.7.20",
+ "anyhow",
+ "clap",
+ "csv",
+ "flate2",
+ "indicatif",
+ "memchr",
+ "num_cpus",
+ "rayon",
+ "tempfile",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
