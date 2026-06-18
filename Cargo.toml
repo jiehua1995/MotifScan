@@ -1,6 +1,6 @@
 [package]
 name = "motifscan"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 authors = ["Jie Hua <fdjiehua@gmail.com>"]
 description = "A fast, streaming, low-memory CLI and Rust library for exact DNA motif scanning in FASTA and FASTQ files."
