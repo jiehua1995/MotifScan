@@ -41,6 +41,10 @@ fn print_count_help() {
     println!("      --report-read-hits <REPORT_READ_HITS>  Optional CSV file for read-level hit details\n");
     println!("Info:");
     println!("  -h, --help  Print help");
+
+    println!("Examples:");
+    println!("  motifscan count --motif ATGCGACCGATGCGTASGGC -i reads.fq -o out.csv");
+    println!("  motifscan count --motifs motifs.csv -i reads.fq -o out.csv --revcomp");
 }
 
 /// Runs the main application flow.

@@ -10,8 +10,7 @@ MotifScan is a streaming, low-memory Rust CLI that counts exact motif occurrence
 - Multiple motifs loaded from a two-column CSV file with `--motifs`
 - Optional reverse-complement scanning with `--revcomp`
 - Optional read-level hit output with `--report-read-hits`
- - Optional progress display with `--progress`
- - Logging: control logging via the `RUST_LOG` environment variable or the environment filter; no per-command `--debug` flag is available; otherwise logging defaults to `warn`
+- Optional progress display with `--progress`
 
 ## Build
 

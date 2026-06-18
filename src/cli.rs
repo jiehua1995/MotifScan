@@ -47,6 +47,7 @@ impl Cli {
 /// Builds the version and citation banner printed by `-v/--version`.
 pub fn version_banner() -> String {
     format!(
+        // TBD: the information should be updated once the manuscript is published.
         "motifscan {}\n\nCitation (BibTeX):\n@software{{motifscan,\n  author = {{jiehua1995}},\n  title = {{MotifScan}},\n  url = {{https://github.com/jiehua1995/MotifScan}},\n  version = {{{}}}\n}}",
         env!("CARGO_PKG_VERSION"),
         env!("CARGO_PKG_VERSION"),
@@ -62,7 +63,11 @@ pub enum Command {
 
 /// Full argument set for the `count` subcommand, including input, motif, threading, and output targets.
 #[derive(Debug, Clone, Args)]
-#[command(about = "Count exact motif hits in reads", long_about = None)]
+#[command(
+    about = "Count exact motif hits in reads",
+    long_about = None,
+    after_help = "\n Examples:\n  motifscan count --motif ATGCGACCGATGCGTASGGC -i reads.fq -o out.csv\n  motifscan count --motifs motifs.csv -i reads.fq -o out.csv --revcomp",
+)]
 pub struct CountArgs {
     #[arg(
         short = 'i',

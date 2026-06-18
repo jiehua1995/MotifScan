@@ -12,13 +12,14 @@
 
 <div style="display:flex;align-items:center;gap:18px;">
   <div style="flex:0 0 auto;">
-    <img src="doc/logo.svg" alt="MotifScan logo" width="120" style="border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,0.12);">
+    <img src="doc/logo.svg" alt="MotifScan logo" width="180" style="border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,0.12);">
   </div>
   <div style="flex:1 1 auto;">
     <h2 style="margin:0 0 6px 0; font-weight:700;">Streaming, low-memory motif scanning CLI in Rust</h2>
     <p style="margin:0;color:#444;">Exact matching for FASTA and FASTQ reads, with optional reverse-complement scanning, CSV motif tables, read-level hit reports, and Aho-Corasick acceleration for larger motif sets.</p>
   </div>
 </div>
+
 
 MotifScan is a streaming, low-memory, multi-threaded Rust CLI for exact motif scanning in FASTA and FASTQ reads.
 
