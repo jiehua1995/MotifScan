@@ -1,5 +1,15 @@
 # MotifScan
 
+[![Rust](https://img.shields.io/badge/Rust-orange?logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![Crates.io](https://img.shields.io/crates/v/motifscan.svg)](https://crates.io/crates/motifscan)
+[![Crates.io Downloads](https://img.shields.io/crates/d/motifscan.svg)](https://crates.io/crates/motifscan)
+[![docs.rs](https://docs.rs/motifscan/badge.svg)](https://docs.rs/motifscan)
+[![CI](https://github.com/jiehua1995/MotifScan/actions/workflows/ci.yml/badge.svg)](https://github.com/jiehua1995/MotifScan/actions/workflows/ci.yml)
+[![GitHub Release](https://img.shields.io/github/v/release/jiehua1995/MotifScan)](https://github.com/jiehua1995/MotifScan/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![GitHub Stars](https://img.shields.io/github/stars/jiehua1995/MotifScan?style=flat)](https://github.com/jiehua1995/MotifScan/stargazers)
+
+
 <div style="display:flex;align-items:center;gap:18px;">
   <div style="flex:0 0 auto;">
     <img src="doc/logo.svg" alt="MotifScan logo" width="120" style="border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,0.12);">
