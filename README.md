@@ -12,13 +12,17 @@
 
 MotifScan is a streaming, low-memory, multi-threaded Rust CLI for exact motif scanning in FASTA and FASTQ reads.
 
-## Build Dependency
+## Dependency
 
 - [Rust](https://rust-lang.org/tools/install/) toolchain for building from source
 
 ## Installation
 
+### Build from source with the Rust toolchain:
+
 ```bash
+git clone https://github.com/jiehua1995/MotifScan
+cd MotifScan
 cargo build --release
 ```
 
@@ -28,7 +32,15 @@ Binary path:
 ./target/release/motifscan
 ```
 
-Version information:
+### Install directly from crates.io:
+
+```bash
+cargo install motifscan
+```
+
+Crates.io page: https://crates.io/crates/motifscan
+
+## Version information:
 
 ```bash
 motifscan -v
