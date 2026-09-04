@@ -5,6 +5,7 @@ pub mod io;
 pub mod motif;
 pub mod output;
 pub mod scanner;
+#[allow(dead_code, clippy::needless_range_loop)]
 pub mod species;
 
 use anyhow::Result;
