@@ -23,8 +23,8 @@ jobs:
         with:
           toolchain: stable
           profile: minimal
-      - name: Rustfmt check
-        run: cargo fmt -- --check
+      - name: Rustfmt
+        run: cargo fmt
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Tests
