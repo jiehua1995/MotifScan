@@ -4,7 +4,7 @@ use std::process::Command;
 use tempfile::tempdir;
 
 fn pseudo_dna(len: usize) -> String {
-    let alphabet = [b'A', b'C', b'G', b'T'];
+    let alphabet = *b"ACGT";
     let mut state = 0x9e37_79b9_7f4a_7c15u64;
     let mut out = Vec::with_capacity(len);
     for _ in 0..len {
