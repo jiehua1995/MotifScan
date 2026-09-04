@@ -1,11 +1,15 @@
-//! Species-aware fuzzy scanning for long-read FASTA/FASTQ data.
+//! Species-aware fuzzy scanning for noisy long-read FASTA/FASTQ data.
 //!
-//! This mode treats each mel/sim motif pair as one homologous locus. Shared exact k-mers
-//! are used only as fast anchors. Candidate regions are then verified with a small
-//! semi-global edit-distance alignment that tolerates substitutions and indels. Species
-//! assignment is based only on diagnostic substitution SNPs extracted automatically
-//! from a global alignment of the two reference windows.
+//! The scanner deliberately separates two questions:
+//! 1. locus identity: long-window approximate matching with sequencing-error tolerance;
+//! 2. species identity: voting only at substitution SNPs extracted from a mel/sim pair.
+//!
+//! Known differences between the paired references (substitution SNPs and pair-specific
+//! indels) do not count as ordinary locus-matching errors. Pair-specific indels are not
+//! used as species votes because long-read indel errors are comparatively difficult to
+//! model robustly.
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -42,6 +46,9 @@ struct Locus {
     sim_seq: Vec<u8>,
     snps: Vec<DiagnosticSnp>,
     indel_columns: usize,
+    /// Positions present in the mel reference but aligned to a gap in sim.
+    /// They are known pair differences and are excluded from shared-site identity.
+    mel_only_positions: HashSet<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -57,16 +64,17 @@ struct AnchorMeta {
     ref_pos: usize,
 }
 
+/// Aho-Corasick patterns are unique strings. One pattern may intentionally point to
+/// several loci/positions, which avoids losing candidates when shared anchors are equal.
 struct AnchorIndex {
     ac: AhoCorasick,
-    meta: Vec<AnchorMeta>,
+    meta: Vec<Vec<AnchorMeta>>,
 }
 
 #[derive(Debug, Clone)]
 struct AlignmentResult {
     edit_distance: usize,
     ref_to_target: Vec<Option<usize>>,
-    insertions: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -140,7 +148,6 @@ struct InputSpec {
     path: PathBuf,
 }
 
-/// Entry point for `motifscan species`.
 pub fn run_species(args: &SpeciesArgs) -> Result<()> {
     args.validate()?;
 
@@ -148,18 +155,16 @@ pub fn run_species(args: &SpeciesArgs) -> Result<()> {
     let pairs_path = args.pairs.as_ref().unwrap();
     let output_path = args.output.as_ref().unwrap();
 
-    let raw_motifs = load_motif_file(motifs_path)?;
-    let motif_map: HashMap<String, Vec<u8>> = raw_motifs
+    let motif_map: HashMap<String, Vec<u8>> = load_motif_file(motifs_path)?
         .into_iter()
         .map(|m| (m.name, m.sequence.trim().to_ascii_uppercase().into_bytes()))
         .collect();
-
     let loci = load_pairs(pairs_path, &motif_map)?;
     if loci.is_empty() {
         bail!("pair file did not contain any locus pairs");
     }
 
-    let anchor_index = build_anchor_index(&loci, args.anchor_k, args.anchors_per_locus)?;
+    let anchors = build_anchor_index(&loci, args.anchor_k, args.anchors_per_locus)?;
     let inputs = collect_inputs(args)?;
 
     let mut summary_writer = Writer::from_path(output_path)
@@ -179,20 +184,20 @@ pub fn run_species(args: &SpeciesArgs) -> Result<()> {
         .with_context(|| format!("failed to create {}", snp_path.display()))?;
     write_snp_header(&mut snp_writer)?;
 
-    if let Some(pair_qc) = &args.pair_qc_output {
-        write_pair_qc(pair_qc, &loci)?;
+    if let Some(path) = &args.pair_qc_output {
+        write_pair_qc(path, &loci)?;
     }
 
-    for (file_idx, input) in inputs.iter().enumerate() {
+    for (idx, input) in inputs.iter().enumerate() {
         eprintln!(
             "[{}/{}] sample={} input={}",
-            file_idx + 1,
+            idx + 1,
             inputs.len(),
             input.sample,
             input.path.display()
         );
-        let stats = scan_one_file(input, &loci, &anchor_index, args)?;
-        write_sample_summary(&mut summary_writer, input, &loci, &stats, args)?;
+        let stats = scan_one_file(input, &loci, &anchors, args)?;
+        write_sample_summary(&mut summary_writer, input, &loci, &stats)?;
         write_sample_snps(&mut snp_writer, input, &loci, &stats)?;
         summary_writer.flush()?;
         snp_writer.flush()?;
@@ -205,18 +210,15 @@ pub fn run_species(args: &SpeciesArgs) -> Result<()> {
 
 fn collect_inputs(args: &SpeciesArgs) -> Result<Vec<InputSpec>> {
     let mut out = Vec::new();
-
     if let Some(input) = &args.input {
-        let sample = args
-            .sample
-            .clone()
-            .unwrap_or_else(|| infer_sample_name(input));
         out.push(InputSpec {
-            sample,
+            sample: args
+                .sample
+                .clone()
+                .unwrap_or_else(|| infer_sample_name(input)),
             path: input.clone(),
         });
     }
-
     if let Some(list_path) = &args.input_list {
         let reader = BufReader::new(
             File::open(list_path)
@@ -241,13 +243,12 @@ fn collect_inputs(args: &SpeciesArgs) -> Result<Vec<InputSpec>> {
             out.push(InputSpec { sample, path });
         }
     }
-
     if out.is_empty() {
         bail!("one of --input or --input-list is required");
     }
-    for item in &out {
-        if !item.path.is_file() {
-            bail!("input file not found: {}", item.path.display());
+    for x in &out {
+        if !x.path.is_file() {
+            bail!("input file not found: {}", x.path.display());
         }
     }
     Ok(out)
@@ -255,7 +256,9 @@ fn collect_inputs(args: &SpeciesArgs) -> Result<Vec<InputSpec>> {
 
 fn infer_sample_name(path: &Path) -> String {
     let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("sample");
-    for suffix in [".fastq.gz", ".fq.gz", ".fasta.gz", ".fa.gz", ".fastq", ".fq", ".fasta", ".fa"] {
+    for suffix in [
+        ".fastq.gz", ".fq.gz", ".fasta.gz", ".fa.gz", ".fastq", ".fq", ".fasta", ".fa",
+    ] {
         if name.to_ascii_lowercase().ends_with(suffix) {
             return name[..name.len() - suffix.len()].to_string();
         }
@@ -275,19 +278,23 @@ fn load_pairs(path: &Path, motifs: &HashMap<String, Vec<u8>>) -> Result<Vec<Locu
         .with_context(|| format!("failed to open pair file {}", path.display()))?;
 
     let mut loci = Vec::new();
-    for (i, rec) in reader.records().enumerate() {
+    for (row_idx, rec) in reader.records().enumerate() {
         let rec = rec?;
         if rec.is_empty() {
             continue;
         }
         if rec.len() != 3 {
-            bail!("{}:{} expected 3 columns: locus,mel,sim", path.display(), i + 1);
+            bail!(
+                "{}:{} expected 3 columns: locus,mel,sim",
+                path.display(),
+                row_idx + 1
+            );
         }
-        let locus = rec.get(0).unwrap().trim();
+        let name = rec.get(0).unwrap().trim();
         let mel_name = rec.get(1).unwrap().trim();
         let sim_name = rec.get(2).unwrap().trim();
-        if i == 0
-            && locus.eq_ignore_ascii_case("locus")
+        if row_idx == 0
+            && name.eq_ignore_ascii_case("locus")
             && mel_name.eq_ignore_ascii_case("mel")
             && sim_name.eq_ignore_ascii_case("sim")
         {
@@ -295,26 +302,27 @@ fn load_pairs(path: &Path, motifs: &HashMap<String, Vec<u8>>) -> Result<Vec<Locu
         }
         let mel_seq = motifs
             .get(mel_name)
-            .ok_or_else(|| anyhow!("pair '{}' references missing motif '{}'", locus, mel_name))?
+            .ok_or_else(|| anyhow!("pair '{}' references missing motif '{}'", name, mel_name))?
             .clone();
         let sim_seq = motifs
             .get(sim_name)
-            .ok_or_else(|| anyhow!("pair '{}' references missing motif '{}'", locus, sim_name))?
+            .ok_or_else(|| anyhow!("pair '{}' references missing motif '{}'", name, sim_name))?
             .clone();
         validate_dna(mel_name, &mel_seq)?;
         validate_dna(sim_name, &sim_seq)?;
-        let (snps, indel_columns) = extract_diagnostic_snps(&mel_seq, &sim_seq);
+        let (snps, indel_columns, mel_only_positions) = extract_pair_differences(&mel_seq, &sim_seq);
         if snps.is_empty() {
-            bail!("pair '{}' has no diagnostic substitution SNPs", locus);
+            bail!("pair '{}' has no diagnostic substitution SNPs", name);
         }
         loci.push(Locus {
-            name: locus.to_string(),
+            name: name.to_string(),
             mel_name: mel_name.to_string(),
             sim_name: sim_name.to_string(),
             mel_seq,
             sim_seq,
             snps,
             indel_columns,
+            mel_only_positions,
         });
     }
     Ok(loci)
@@ -324,19 +332,27 @@ fn validate_dna(name: &str, seq: &[u8]) -> Result<()> {
     if seq.is_empty() {
         bail!("motif '{}' has empty sequence", name);
     }
-    if let Some(&bad) = seq.iter().find(|&&b| !matches!(b, b'A' | b'C' | b'G' | b'T' | b'N')) {
+    if let Some(&bad) = seq
+        .iter()
+        .find(|&&b| !matches!(b, b'A' | b'C' | b'G' | b'T' | b'N'))
+    {
         bail!("motif '{}' contains unsupported base '{}'", name, bad as char);
     }
     Ok(())
 }
 
-/// Needleman-Wunsch edit alignment used once at startup to map the two species windows.
-fn extract_diagnostic_snps(mel: &[u8], sim: &[u8]) -> (Vec<DiagnosticSnp>, usize) {
+/// Return substitution SNPs, number of pairwise indel columns, and mel coordinates that
+/// are absent from the sim reference. The latter are excluded from locus identity.
+fn extract_pair_differences(
+    mel: &[u8],
+    sim: &[u8],
+) -> (Vec<DiagnosticSnp>, usize, HashSet<usize>) {
     let (a, b) = global_align(mel, sim);
     let mut mel_pos = 0usize;
     let mut sim_pos = 0usize;
     let mut snps = Vec::new();
-    let mut indels = 0usize;
+    let mut indel_columns = 0usize;
+    let mut mel_only_positions = HashSet::new();
 
     for (&x, &y) in a.iter().zip(b.iter()) {
         match (x, y) {
@@ -353,39 +369,38 @@ fn extract_diagnostic_snps(mel: &[u8], sim: &[u8]) -> (Vec<DiagnosticSnp>, usize
                 sim_pos += 1;
             }
             (Some(_), None) => {
+                mel_only_positions.insert(mel_pos);
                 mel_pos += 1;
-                indels += 1;
+                indel_columns += 1;
             }
             (None, Some(_)) => {
                 sim_pos += 1;
-                indels += 1;
+                indel_columns += 1;
             }
             (None, None) => unreachable!(),
         }
     }
-    (snps, indels)
+    (snps, indel_columns, mel_only_positions)
 }
 
+/// Simple edit-cost global alignment. References are short diagnostic windows, so an
+/// O(m*n) matrix is tiny and this runs only once per pair at startup.
 fn global_align(a: &[u8], b: &[u8]) -> (Vec<Option<u8>>, Vec<Option<u8>>) {
-    let n = b.len();
-    let mut dp = vec![vec![0usize; n + 1]; a.len() + 1];
+    let mut dp = vec![vec![0usize; b.len() + 1]; a.len() + 1];
     for i in 0..=a.len() {
         dp[i][0] = i;
     }
-    for j in 0..=n {
+    for j in 0..=b.len() {
         dp[0][j] = j;
     }
     for i in 1..=a.len() {
-        for j in 1..=n {
+        for j in 1..=b.len() {
             let sub = dp[i - 1][j - 1] + usize::from(a[i - 1] != b[j - 1]);
-            let del = dp[i - 1][j] + 1;
-            let ins = dp[i][j - 1] + 1;
-            dp[i][j] = sub.min(del).min(ins);
+            dp[i][j] = sub.min(dp[i - 1][j] + 1).min(dp[i][j - 1] + 1);
         }
     }
 
-    let mut i = a.len();
-    let mut j = b.len();
+    let (mut i, mut j) = (a.len(), b.len());
     let mut aa = Vec::new();
     let mut bb = Vec::new();
     while i > 0 || j > 0 {
@@ -423,7 +438,19 @@ fn build_anchor_index(loci: &[Locus], k: usize, per_locus: usize) -> Result<Anch
     }
 
     let mut patterns = Vec::<String>::new();
-    let mut meta = Vec::<AnchorMeta>::new();
+    let mut meta = Vec::<Vec<AnchorMeta>>::new();
+    let mut pattern_ids = HashMap::<String, usize>::new();
+
+    let mut register = |pattern: String, anchor_meta: AnchorMeta| {
+        if let Some(&id) = pattern_ids.get(&pattern) {
+            meta[id].push(anchor_meta);
+        } else {
+            let id = patterns.len();
+            pattern_ids.insert(pattern.clone(), id);
+            patterns.push(pattern);
+            meta.push(vec![anchor_meta]);
+        }
+    };
 
     for (locus_index, locus) in loci.iter().enumerate() {
         if locus.mel_seq.len() < k {
@@ -432,7 +459,9 @@ fn build_anchor_index(loci: &[Locus], k: usize, per_locus: usize) -> Result<Anch
         let snp_positions: HashSet<usize> = locus.snps.iter().map(|s| s.mel_pos).collect();
         let mut candidates = Vec::new();
         for pos in 0..=locus.mel_seq.len() - k {
-            if (pos..pos + k).any(|p| snp_positions.contains(&p)) {
+            if (pos..pos + k).any(|p| {
+                snp_positions.contains(&p) || locus.mel_only_positions.contains(&p)
+            }) {
                 continue;
             }
             let mer = &locus.mel_seq[pos..pos + k];
@@ -442,26 +471,30 @@ fn build_anchor_index(loci: &[Locus], k: usize, per_locus: usize) -> Result<Anch
             candidates.push((pos, mer.to_vec()));
         }
         if candidates.is_empty() {
-            bail!("locus '{}' has no shared {}-mer anchors; reduce --anchor-k", locus.name, k);
+            bail!(
+                "locus '{}' has no shared {}-mer anchors; reduce --anchor-k",
+                locus.name,
+                k
+            );
         }
 
-        let chosen = evenly_spaced(&candidates, per_locus);
-        for (pos, mer) in chosen {
-            patterns.push(String::from_utf8(mer.clone()).unwrap());
-            meta.push(AnchorMeta {
-                locus_index,
-                strand: ScanStrand::Forward,
-                ref_pos: pos,
-            });
-
-            let rc = revcomp(&mer);
-            let rc_pos = locus.mel_seq.len() - (pos + k);
-            patterns.push(String::from_utf8(rc).unwrap());
-            meta.push(AnchorMeta {
-                locus_index,
-                strand: ScanStrand::Reverse,
-                ref_pos: rc_pos,
-            });
+        for (pos, mer) in evenly_spaced(&candidates, per_locus) {
+            register(
+                String::from_utf8(mer.clone()).unwrap(),
+                AnchorMeta {
+                    locus_index,
+                    strand: ScanStrand::Forward,
+                    ref_pos: pos,
+                },
+            );
+            register(
+                String::from_utf8(revcomp(&mer)).unwrap(),
+                AnchorMeta {
+                    locus_index,
+                    strand: ScanStrand::Reverse,
+                    ref_pos: locus.mel_seq.len() - (pos + k),
+                },
+            );
         }
     }
 
@@ -480,15 +513,12 @@ fn evenly_spaced(candidates: &[(usize, Vec<u8>)], n: usize) -> Vec<(usize, Vec<u
         return vec![candidates[candidates.len() / 2].clone()];
     }
     (0..n)
-        .map(|i| {
-            let idx = i * (candidates.len() - 1) / (n - 1);
-            candidates[idx].clone()
-        })
+        .map(|i| candidates[i * (candidates.len() - 1) / (n - 1)].clone())
         .collect()
 }
 
 fn contains_subslice(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack.windows(needle.len()).any(|w| w == needle)
+    haystack.windows(needle.len()).any(|x| x == needle)
 }
 
 fn scan_one_file(
@@ -530,9 +560,8 @@ fn scan_one_file(
 
         let batch: Vec<Vec<ReadHit>> = chunk
             .par_iter()
-            .map(|record| scan_record_species(record, loci, anchors, args))
+            .map(|r| scan_record_species(r, loci, anchors, args))
             .collect();
-
         for hits in batch {
             for hit in hits {
                 merge_hit(&mut stats[hit.locus_index], &hit);
@@ -543,7 +572,6 @@ fn scan_one_file(
             let snap = reader.progress_snapshot();
             pb.set_position(snap.bytes_read.min(snap.total_bytes));
             let elapsed = started.elapsed().as_secs_f64().max(1e-9);
-            let rps = reads_processed as f64 / elapsed;
             let avg = if reads_processed > 0 {
                 bases_processed as f64 / reads_processed as f64
             } else {
@@ -551,7 +579,10 @@ fn scan_one_file(
             };
             pb.set_message(format!(
                 "{} | reads {} | {:.0} reads/s | avg {:.0} bp",
-                input.sample, reads_processed, rps, avg
+                input.sample,
+                reads_processed,
+                reads_processed as f64 / elapsed,
+                avg
             ));
         }
     }
@@ -574,44 +605,41 @@ fn scan_record_species(
     anchors: &AnchorIndex,
     args: &SpeciesArgs,
 ) -> Vec<ReadHit> {
-    let seq = &record.seq;
-    let qual = record.qual.as_deref();
     let mut candidates: HashMap<(usize, ScanStrand), Vec<isize>> = HashMap::new();
-
-    for m in anchors.ac.find_iter(seq) {
-        let meta = &anchors.meta[m.pattern()];
-        let estimated_start = m.start() as isize - meta.ref_pos as isize;
-        let starts = candidates.entry((meta.locus_index, meta.strand)).or_default();
-        if !starts.iter().any(|&x| (x - estimated_start).abs() <= 3) {
-            starts.push(estimated_start);
+    for m in anchors.ac.find_iter(&record.seq) {
+        for meta in &anchors.meta[m.pattern()] {
+            let estimated_start = m.start() as isize - meta.ref_pos as isize;
+            let starts = candidates.entry((meta.locus_index, meta.strand)).or_default();
+            if !starts.iter().any(|&x| (x - estimated_start).abs() <= 3) {
+                starts.push(estimated_start);
+            }
         }
     }
 
-    let mut per_locus: HashMap<usize, ReadHit> = HashMap::new();
+    let mut best_by_locus: HashMap<usize, ReadHit> = HashMap::new();
     for ((locus_index, strand), starts) in candidates {
-        let locus = &loci[locus_index];
         for estimated_start in starts {
             if let Some(hit) = evaluate_candidate(
                 locus_index,
-                locus,
+                &loci[locus_index],
                 strand,
                 estimated_start,
-                seq,
-                qual,
+                &record.seq,
+                record.qual.as_deref(),
                 args,
             ) {
-                let replace = per_locus
+                let replace = best_by_locus
                     .get(&locus_index)
                     .map(|old| hit_key(&hit) > hit_key(old))
                     .unwrap_or(true);
                 if replace {
-                    per_locus.insert(locus_index, hit);
+                    best_by_locus.insert(locus_index, hit);
                 }
             }
         }
     }
 
-    let mut hits: Vec<ReadHit> = per_locus.into_values().collect();
+    let mut hits: Vec<ReadHit> = best_by_locus.into_values().collect();
     if args.locus_mode == "all" {
         return hits;
     }
@@ -620,12 +648,12 @@ fn scan_record_species(
     hits
 }
 
-fn hit_key(hit: &ReadHit) -> (f64, usize, u32, std::cmp::Reverse<usize>) {
+fn hit_key(hit: &ReadHit) -> (f64, usize, u32, Reverse<usize>) {
     (
         hit.shared_identity,
         hit.aligned_ref_bases,
         hit.informative_sites,
-        std::cmp::Reverse(hit.edit_distance),
+        Reverse(hit.edit_distance),
     )
 }
 
@@ -654,6 +682,7 @@ fn evaluate_candidate(
     let alignment = semi_global_align(&reference, target);
 
     let mut snp_by_pos: HashMap<usize, (usize, u8, u8)> = HashMap::new();
+    let mut excluded_pair_indels = HashSet::new();
     for (idx, snp) in locus.snps.iter().enumerate() {
         let (pos, mel_base, sim_base) = match strand {
             ScanStrand::Forward => (snp.mel_pos, snp.mel_base, snp.sim_base),
@@ -665,9 +694,15 @@ fn evaluate_candidate(
         };
         snp_by_pos.insert(pos, (idx, mel_base, sim_base));
     }
+    for &pos in &locus.mel_only_positions {
+        excluded_pair_indels.insert(match strand {
+            ScanStrand::Forward => pos,
+            ScanStrand::Reverse => locus.mel_seq.len() - 1 - pos,
+        });
+    }
 
     let mut shared_match = 0usize;
-    let mut shared_error = alignment.insertions;
+    let mut shared_error = 0usize;
     let mut aligned_ref_bases = 0usize;
     let mut mel_support = 0u32;
     let mut sim_support = 0u32;
@@ -675,45 +710,36 @@ fn evaluate_candidate(
     let mut observations = Vec::new();
 
     for ref_pos in 0..reference.len() {
+        if excluded_pair_indels.contains(&ref_pos) {
+            continue;
+        }
         let target_pos = alignment.ref_to_target[ref_pos];
-        if snp_by_pos.contains_key(&ref_pos) {
+        if let Some(&(snp_idx, mel_base, sim_base)) = snp_by_pos.get(&ref_pos) {
             let Some(tp) = target_pos else { continue };
             aligned_ref_bases += 1;
             let read_pos = from + tp;
             let base = read[read_pos];
-            // Record.qual is already decoded by io.rs from ASCII Phred+33 into numeric Phred.
+            // io.rs already decodes FASTQ Phred+33 to numeric Phred values.
             let q = qual
                 .and_then(|qv| qv.get(read_pos).copied())
                 .unwrap_or(DEFAULT_NO_QUAL);
-            let (snp_idx, mel_base, sim_base) = snp_by_pos[&ref_pos];
-            if q < args.min_snp_baseq {
-                observations.push(SnpObservation {
-                    snp_index: snp_idx,
-                    category: SnpCategory::LowQuality,
-                    quality: q,
-                });
+            let category = if q < args.min_snp_baseq {
+                SnpCategory::LowQuality
             } else if base == mel_base {
                 mel_support += 1;
-                observations.push(SnpObservation {
-                    snp_index: snp_idx,
-                    category: SnpCategory::Mel,
-                    quality: q,
-                });
+                SnpCategory::Mel
             } else if base == sim_base {
                 sim_support += 1;
-                observations.push(SnpObservation {
-                    snp_index: snp_idx,
-                    category: SnpCategory::Sim,
-                    quality: q,
-                });
+                SnpCategory::Sim
             } else {
                 other_support += 1;
-                observations.push(SnpObservation {
-                    snp_index: snp_idx,
-                    category: SnpCategory::Other,
-                    quality: q,
-                });
-            }
+                SnpCategory::Other
+            };
+            observations.push(SnpObservation {
+                snp_index: snp_idx,
+                category,
+                quality: q,
+            });
             continue;
         }
 
@@ -733,11 +759,11 @@ fn evaluate_candidate(
     if aligned_ref_bases < args.min_aligned_bases {
         return None;
     }
-    let shared_den = shared_match + shared_error;
-    if shared_den == 0 {
+    let denominator = shared_match + shared_error;
+    if denominator == 0 {
         return None;
     }
-    let shared_identity = shared_match as f64 / shared_den as f64;
+    let shared_identity = shared_match as f64 / denominator as f64;
     if shared_identity < args.min_shared_identity {
         return None;
     }
@@ -774,35 +800,32 @@ fn evaluate_candidate(
     })
 }
 
-/// Align the full reference to the best substring of the target (HW-style semi-global edit alignment).
+/// Full reference vs best target substring (HW-style semi-global edit alignment).
+/// Insertions in the read are represented by target positions not mapped to a reference
+/// coordinate. They are intentionally not included in shared-site identity because they
+/// may correspond either to long-read insertion error or to a known sim-only pair indel.
 fn semi_global_align(reference: &[u8], target: &[u8]) -> AlignmentResult {
-    let m = reference.len();
-    let n = target.len();
-    let mut dp = vec![vec![0usize; n + 1]; m + 1];
-    for i in 0..=m {
+    let mut dp = vec![vec![0usize; target.len() + 1]; reference.len() + 1];
+    for i in 0..=reference.len() {
         dp[i][0] = i;
     }
-    for j in 0..=n {
+    for j in 0..=target.len() {
         dp[0][j] = 0;
     }
-    for i in 1..=m {
-        for j in 1..=n {
+    for i in 1..=reference.len() {
+        for j in 1..=target.len() {
             let sub = dp[i - 1][j - 1] + usize::from(reference[i - 1] != target[j - 1]);
-            let del = dp[i - 1][j] + 1;
-            let ins = dp[i][j - 1] + 1;
-            dp[i][j] = sub.min(del).min(ins);
+            dp[i][j] = sub.min(dp[i - 1][j] + 1).min(dp[i][j - 1] + 1);
         }
     }
 
-    let (mut j, &best) = dp[m]
+    let (mut j, &best) = dp[reference.len()]
         .iter()
         .enumerate()
         .min_by_key(|(_, v)| *v)
         .unwrap();
-    let mut i = m;
-    let mut ref_to_target = vec![None; m];
-    let mut insertions = 0usize;
-
+    let mut i = reference.len();
+    let mut ref_to_target = vec![None; reference.len()];
     while i > 0 {
         if j > 0 {
             let cost = usize::from(reference[i - 1] != target[j - 1]);
@@ -814,21 +837,16 @@ fn semi_global_align(reference: &[u8], target: &[u8]) -> AlignmentResult {
             }
         }
         if dp[i][j] == dp[i - 1][j] + 1 {
-            ref_to_target[i - 1] = None;
             i -= 1;
         } else if j > 0 {
-            insertions += 1;
             j -= 1;
         } else {
-            ref_to_target[i - 1] = None;
             i -= 1;
         }
     }
-
     AlignmentResult {
         edit_distance: best,
         ref_to_target,
-        insertions,
     }
 }
 
@@ -848,27 +866,19 @@ fn merge_hit(stats: &mut LocusStats, hit: &ReadHit) {
     }
     stats.shared_identity_sum += hit.shared_identity;
     stats.informative_sum += hit.informative_sites as u64;
-
     for obs in &hit.snp_observations {
         let c = &mut stats.snp_counts[obs.snp_index];
         match obs.category {
-            SnpCategory::Mel => {
-                c.mel += 1;
-                c.q_sum += obs.quality as u64;
-                c.q_n += 1;
+            SnpCategory::Mel => c.mel += 1,
+            SnpCategory::Sim => c.sim += 1,
+            SnpCategory::Other => c.other += 1,
+            SnpCategory::LowQuality => {
+                c.lowq += 1;
+                continue;
             }
-            SnpCategory::Sim => {
-                c.sim += 1;
-                c.q_sum += obs.quality as u64;
-                c.q_n += 1;
-            }
-            SnpCategory::Other => {
-                c.other += 1;
-                c.q_sum += obs.quality as u64;
-                c.q_n += 1;
-            }
-            SnpCategory::LowQuality => c.lowq += 1,
         }
+        c.q_sum += obs.quality as u64;
+        c.q_n += 1;
     }
 }
 
@@ -951,9 +961,8 @@ fn write_sample_summary(
     input: &InputSpec,
     loci: &[Locus],
     stats: &[LocusStats],
-    _args: &SpeciesArgs,
 ) -> Result<()> {
-    for (locus, st) in loci.iter().zip(stats.iter()) {
+    for (locus, st) in loci.iter().zip(stats) {
         let assigned = st.mel_reads + st.sim_reads;
         let mel_fraction = if assigned > 0 {
             format!("{:.8}", st.mel_reads as f64 / assigned as f64)
@@ -975,7 +984,6 @@ fn write_sample_summary(
         } else {
             String::new()
         };
-
         w.write_record([
             input.sample.clone(),
             input.path.display().to_string(),
@@ -1014,11 +1022,11 @@ fn write_sample_snps(
     loci: &[Locus],
     stats: &[LocusStats],
 ) -> Result<()> {
-    for (locus, st) in loci.iter().zip(stats.iter()) {
+    for (locus, st) in loci.iter().zip(stats) {
         for (idx, snp) in locus.snps.iter().enumerate() {
             let c = &st.snp_counts[idx];
             let depth = c.mel + c.sim + c.other;
-            let frac = |x: u64| {
+            let fraction = |x: u64| {
                 if depth > 0 {
                     format!("{:.8}", x as f64 / depth as f64)
                 } else {
@@ -1044,9 +1052,9 @@ fn write_sample_snps(
                 c.other.to_string(),
                 c.lowq.to_string(),
                 depth.to_string(),
-                frac(c.mel),
-                frac(c.sim),
-                frac(c.other),
+                fraction(c.mel),
+                fraction(c.sim),
+                fraction(c.other),
                 mean_q,
             ])?;
         }
@@ -1106,7 +1114,7 @@ mod tests {
         sim[5] = b'T';
         sim[12] = b'G';
         sim[19] = b'A';
-        let (snps, indels) = extract_diagnostic_snps(&mel, &sim);
+        let (snps, indel_columns, mel_only_positions) = extract_pair_differences(&mel, &sim);
         Locus {
             name: "toy".into(),
             mel_name: "mel".into(),
@@ -1114,7 +1122,8 @@ mod tests {
             mel_seq: mel,
             sim_seq: sim,
             snps,
-            indel_columns: indels,
+            indel_columns,
+            mel_only_positions,
         }
     }
 
@@ -1135,7 +1144,7 @@ mod tests {
             anchors_per_locus: 4,
             alignment_slack: 8,
             min_shared_identity: 0.80,
-            min_aligned_bases: 20,
+            min_aligned_bases: 15,
             min_snp_baseq: 10,
             min_informative_snps: 2,
             species_fraction: 0.75,
@@ -1149,32 +1158,45 @@ mod tests {
         let locus = toy_locus();
         assert_eq!(locus.snps.len(), 3);
         assert_eq!(locus.indel_columns, 0);
+        assert!(locus.mel_only_positions.is_empty());
         assert_eq!(locus.snps[0].mel_pos, 5);
     }
 
     #[test]
     fn semi_global_tolerates_shared_substitution_and_indel() {
-        let reference = b"ACGTACGTACGT";
-        let target = b"TTACGTTCGTTACGTGG";
-        let a = semi_global_align(reference, target);
+        let a = semi_global_align(b"ACGTACGTACGT", b"TTACGTTCGTTACGTGG");
         assert!(a.edit_distance <= 3);
-        assert_eq!(a.ref_to_target.len(), reference.len());
+        assert_eq!(a.ref_to_target.len(), 12);
     }
 
     #[test]
     fn mel_and_sim_votes_are_separated() {
         let locus = toy_locus();
         let args = toy_args();
-
-        let mel_read = locus.mel_seq.clone();
-        let hit = evaluate_candidate(0, &locus, ScanStrand::Forward, 0, &mel_read, None, &args).unwrap();
-        assert_eq!(hit.class, SpeciesClass::Mel);
-        assert_eq!(hit.mel_support, 3);
-
-        let sim_read = locus.sim_seq.clone();
-        let hit = evaluate_candidate(0, &locus, ScanStrand::Forward, 0, &sim_read, None, &args).unwrap();
-        assert_eq!(hit.class, SpeciesClass::Sim);
-        assert_eq!(hit.sim_support, 3);
+        let mel = evaluate_candidate(
+            0,
+            &locus,
+            ScanStrand::Forward,
+            0,
+            &locus.mel_seq,
+            None,
+            &args,
+        )
+        .unwrap();
+        assert_eq!(mel.class, SpeciesClass::Mel);
+        assert_eq!(mel.mel_support, 3);
+        let sim = evaluate_candidate(
+            0,
+            &locus,
+            ScanStrand::Forward,
+            0,
+            &locus.sim_seq,
+            None,
+            &args,
+        )
+        .unwrap();
+        assert_eq!(sim.class, SpeciesClass::Sim);
+        assert_eq!(sim.sim_support, 3);
     }
 
     #[test]
@@ -1184,7 +1206,8 @@ mod tests {
         let mut read = locus.mel_seq.clone();
         read[2] = b'A';
         read.insert(9, b'T');
-        let hit = evaluate_candidate(0, &locus, ScanStrand::Forward, 0, &read, None, &args).unwrap();
+        let hit = evaluate_candidate(0, &locus, ScanStrand::Forward, 0, &read, None, &args)
+            .unwrap();
         assert_eq!(hit.class, SpeciesClass::Mel);
     }
 
@@ -1193,7 +1216,35 @@ mod tests {
         let locus = toy_locus();
         let args = toy_args();
         let read = revcomp(&locus.sim_seq);
-        let hit = evaluate_candidate(0, &locus, ScanStrand::Reverse, 0, &read, None, &args).unwrap();
+        let hit = evaluate_candidate(0, &locus, ScanStrand::Reverse, 0, &read, None, &args)
+            .unwrap();
         assert_eq!(hit.class, SpeciesClass::Sim);
+    }
+
+    #[test]
+    fn known_pair_indels_do_not_penalize_sim_identity() {
+        let mel = b"AACCGGTTAACCGGTTAACCGGTT".to_vec();
+        let mut sim = mel.clone();
+        sim[4] = b'T';
+        sim[15] = b'A';
+        sim.drain(19..22);
+        let (snps, indel_columns, mel_only_positions) = extract_pair_differences(&mel, &sim);
+        let locus = Locus {
+            name: "indel".into(),
+            mel_name: "mel".into(),
+            sim_name: "sim".into(),
+            mel_seq: mel,
+            sim_seq: sim.clone(),
+            snps,
+            indel_columns,
+            mel_only_positions,
+        };
+        let mut args = toy_args();
+        args.min_shared_identity = 0.95;
+        args.min_aligned_bases = 10;
+        let hit = evaluate_candidate(0, &locus, ScanStrand::Forward, 0, &sim, None, &args)
+            .unwrap();
+        assert_eq!(hit.class, SpeciesClass::Sim);
+        assert!((hit.shared_identity - 1.0).abs() < 1e-9);
     }
 }
