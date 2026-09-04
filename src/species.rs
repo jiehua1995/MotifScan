@@ -681,9 +681,9 @@ fn evaluate_candidate(
             aligned_ref_bases += 1;
             let read_pos = from + tp;
             let base = read[read_pos];
+            // Record.qual is already decoded by io.rs from ASCII Phred+33 into numeric Phred.
             let q = qual
                 .and_then(|qv| qv.get(read_pos).copied())
-                .map(|ascii| ascii.saturating_sub(33))
                 .unwrap_or(DEFAULT_NO_QUAL);
             let (snp_idx, mel_base, sim_base) = snp_by_pos[&ref_pos];
             if q < args.min_snp_baseq {
