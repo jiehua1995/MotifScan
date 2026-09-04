@@ -115,6 +115,8 @@ pub struct SpeciesArgs {
     pub threads: usize,
     #[arg(long, help = "Show per-file byte/read progress", help_heading = "Behavior")]
     pub progress: bool,
+    #[arg(skip)]
+    pub revcomp: bool,
     #[arg(long, default_value_t = 11, help = "Shared exact anchor k-mer length used only for candidate retrieval", help_heading = "Performance")]
     pub anchor_k: usize,
     #[arg(long, default_value_t = 8, help = "Number of evenly spaced shared anchors per locus", help_heading = "Performance")]
